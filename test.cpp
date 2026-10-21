@@ -14,6 +14,14 @@ using namespace std;
 
 atomic<bool> exitRequested{false};
 
+//商店商品条目。available=false 的是预留空位:占着列表的一行,但还没实装商品。
+struct ShopItem{
+    const char* name;
+    int price;
+    int owned;
+    bool available;
+};
+
 BOOL WINAPI HandleConsoleControl(DWORD event){
     if(event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
         return FALSE;
@@ -135,6 +143,16 @@ int main(){
     int y = 10;
     int resourceCount = 0;
     int scene = 0;
+    //商品表驱动商店的画面和购买:加新商品只需在这里多填一行,选择、渲染、扣费都跟着走。
+    //后面三项是留出来的空位(available=false),给后续 commit 填实际商品。
+    vector<ShopItem> shopItems = {
+        {"Auto Robot", 100, 0, true},
+        {"", 0, 0, false},
+        {"", 0, 0, false},
+        {"", 0, 0, false},
+    };
+    int shopSelection = 0;                          //商店光标指向的商品下标
+    string shopNotice = "Pick an item, Enter to buy";  //商店底部反馈行
     int exitCode = 0;
     array<INPUT_RECORD, 64> inputRecords;
     vector<KEY_EVENT_RECORD> keys;
@@ -197,21 +215,55 @@ int main(){
         int oldY = y;
         int oldResourceCount = resourceCount;
         int oldRemainResource = remainResource;
+        //商店里光标位置和反馈文字的变化,不属于上面那几个数值比较,单独用标志位记。
+        bool shopChanged = false;
         for(const auto& key : keys){
             int code = key.wVirtualKeyCode;
             int repeat = max<int>(1, key.wRepeatCount);
             if(code == VK_RIGHT) scene = 1;
             if(code == VK_LEFT) scene = 0;
-            if(!canPlay || scene != 0)
+            if(!canPlay)
                 continue;
-            if(code == 'W') y = max(0, y - repeat);
-            if(code == 'S') y = min(MAP_H - 1, y + repeat);
-            if(code == 'A') x = max(0, x - repeat);
-            if(code == 'D') x = min(MAP_W - 1, x + repeat);
-            if((code == 'E' || code == VK_SPACE) && resource[y][x]){
-                resource[y][x] = false;
-                remainResource--;
-                resourceCount++;
+            if(scene == 0){
+                //采集场景:WASD 移动,E 或空格采掉脚下的资源。
+                if(code == 'W') y = max(0, y - repeat);
+                if(code == 'S') y = min(MAP_H - 1, y + repeat);
+                if(code == 'A') x = max(0, x - repeat);
+                if(code == 'D') x = min(MAP_W - 1, x + repeat);
+                if((code == 'E' || code == VK_SPACE) && resource[y][x]){
+                    resource[y][x] = false;
+                    remainResource--;
+                    resourceCount++;
+                }
+                continue;
+            }
+            //商店场景:光标在商品表上移动,Enter 买下光标指向的那一项。
+            //W/S 和上下方向键都能移动光标,取模实现到顶后绕回。
+            int itemCount = static_cast<int>(shopItems.size());
+            if(code == 'W' || code == VK_UP){
+                shopSelection = (shopSelection + itemCount - 1) % itemCount;
+                shopChanged = true;
+            }
+            if(code == 'S' || code == VK_DOWN){
+                shopSelection = (shopSelection + 1) % itemCount;
+                shopChanged = true;
+            }
+            if(code == VK_RETURN){
+                ShopItem& item = shopItems[shopSelection];
+                if(!item.available){
+                    //空位不可购买,给出提示而不是静默无反应。
+                    shopNotice = "Empty slot: nothing to buy";
+                }
+                else if(resourceCount < item.price){
+                    shopNotice = "Not enough resources: need " + to_string(item.price);
+                }
+                else{
+                    //扣款和加库存必须一起成功,所以前面两种情况直接返回。
+                    resourceCount -= item.price;
+                    item.owned++;
+                    shopNotice = string("Bought ") + item.name + " for " + to_string(item.price);
+                }
+                shopChanged = true;
             }
         }
         if(canPlay && scene == 0){
@@ -226,8 +278,10 @@ int main(){
                 }
             }
         }
+        //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
-                       resourceCount != oldResourceCount || remainResource != oldRemainResource;
+                       resourceCount != oldResourceCount || remainResource != oldRemainResource ||
+                       shopChanged;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
             needsPresent = true;
@@ -276,15 +330,27 @@ int main(){
                 }
             }
             else{
+                //商店画面完全由 shopItems 驱动:商品表加减行,这里跟着变,不需要改代码。
                 int shopWidth = min(48, width - 2);
+                int itemCount = static_cast<int>(shopItems.size());
+                int panelHeight = itemCount + 8;   //标题 + 列表 + 余额 + 反馈 + 两行提示占的总行数
                 int column = (width - shopWidth) / 2;
-                int row = (height - 9) / 2;
-                writeText(column, row, "========== SHOP ==========", shopWidth);
-                writeText(column, row + 2, "Auto Robot: 100 resources", shopWidth);
-                writeText(column, row + 3, "Purchase not implemented", shopWidth);
-                writeText(column, row + 4, "Owned Bots: 0", shopWidth);
-                writeText(column, row + 6, "Collected:" + to_string(resourceCount), shopWidth);
-                writeText(column, row + 8, "Left Game   Q Quit", shopWidth);
+                int row = max(0, (height - panelHeight) / 2);
+                writeText(column, row, "============ SHOP ============", shopWidth);
+                //光标所在行以 > 开头;实装商品显示 价格 和 已有数量,空位显示占位文字。
+                for(int index = 0; index < itemCount; index++){
+                    const ShopItem& item = shopItems[index];
+                    string line = (index == shopSelection ? "> " : "  ") + to_string(index + 1) + ". ";
+                    if(item.available)
+                        line += string(item.name) + "  " + to_string(item.price) + "  x" + to_string(item.owned);
+                    else
+                        line += "(empty slot)";
+                    writeText(column, row + 2 + index, line, shopWidth);
+                }
+                writeText(column, row + itemCount + 2, "Collected:" + to_string(resourceCount), shopWidth);
+                writeText(column, row + itemCount + 3, shopNotice, shopWidth);
+                writeText(column, row + itemCount + 5, "Up/Down Select   Enter Buy", shopWidth);
+                writeText(column, row + itemCount + 6, "Left Game   Q Quit", shopWidth);
             }
         }
         present();
