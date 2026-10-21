@@ -9,7 +9,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 游戏直接调用 Win32 控制台 API,所以构建和测试都只能在 Windows 上跑。
       # g++ 取自 MSYS2 的 UCRT64 包,并把该环境的 bin 加进 PATH,好让下面的 pwsh 步骤直接调到。
@@ -38,7 +38,7 @@ jobs:
 
       - name: Upload the built executable
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PYS-windows
           path: PYS.exe
