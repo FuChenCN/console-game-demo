@@ -10,60 +10,12 @@
 #include <ctime>
 #include <string>
 #include <vector>
+
+#include "platform/console_ctrl.h"   //退出标志与 Ctrl+C/Ctrl+Break 回调
+#include "game/types.h"              //商品条目与机器人
+#include "content/title_assets.h"    //标题页的字模、色板与节奏
+
 using namespace std;
-
-atomic<bool> exitRequested{false};
-
-//商店商品条目。available=false 的是预留空位:占着列表的一行,但还没实装商品。
-struct ShopItem{
-    const char* name;
-    int price;
-    int owned;
-    bool available;
-    int cap;   //最多能买几份,0 表示不限。机器人用它锁死 32 行,升级用它锁死五档。
-};
-
-//一个正在地图上跑动的机器人。dir 是移动方向(+1 向右 / -1 向左),
-//justAte 记录上一次迈步有没有吃到资源,决定这一格画 = 还是 < / >。
-struct Bot{
-    int x;
-    int y;
-    int dir;
-    bool justAte;
-};
-
-//标题大字的像素字模:5 行 x 4 列,'#' 是实心格。只收录标题用到的 6 个字母。
-const string TITLE_GLYPHS[6][5] = {
-    {"####", "#   ", "#   ", "#   ", "####"},   //C
-    {"####", "#  #", "#  #", "#  #", "####"},   //O
-    {"#  #", "## #", "# ##", "#  #", "#  #"},   //N
-    {"####", "#   ", "####", "   #", "####"},   //S
-    {"#   ", "#   ", "#   ", "#   ", "####"},   //L
-    {"####", "#   ", "### ", "#   ", "####"},   //E
-};
-//CONSOLE 对应的下标序列。以后换标题文字,改这一行和上面的字模表就行。
-const int TITLE_LETTERS[7] = {0, 1, 2, 3, 1, 4, 5};
-
-//前景色循环表,相位按字母错开,横着看就是一段流动的渐变。
-const BYTE TITLE_COLORS[7] = {
-    FOREGROUND_RED,
-    FOREGROUND_RED | FOREGROUND_GREEN,
-    FOREGROUND_GREEN,
-    FOREGROUND_GREEN | FOREGROUND_BLUE,
-    FOREGROUND_BLUE,
-    FOREGROUND_BLUE | FOREGROUND_RED,
-    FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,
-};
-const int TITLE_STEPS_MS = 120;   //变色节奏,约 4 个主循环帧
-const int TITLE_COLOR_COUNT = 7;  //TITLE_COLORS 的长度,相位取模用它,别写死数字
-
-BOOL WINAPI HandleConsoleControl(DWORD event){
-    if(event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
-        return FALSE;
-    //回调运行在系统线程中,这里只通知主循环,由主线程统一清理。
-    exitRequested.store(true, memory_order_relaxed);
-    return TRUE;
-}
 
 int main(){
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
