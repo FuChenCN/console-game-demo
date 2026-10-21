@@ -48,9 +48,11 @@ int main(){
 
     //世界状态已收进 game/world.h:网格、密度、剩余量、机器人。
     World world;
-    srand(static_cast<unsigned int>(time(nullptr)));
-    //尺寸改成了运行期参数:默认 512x512,以后"世界规模选择"界面把玩家选的宽高传进这里。
-    world.init(DEFAULT_MAP_W, DEFAULT_MAP_H, 6);
+    //地图由种子决定,种子要留在手上:调试面板把它显示出来,以后存档也只需记这个数,
+    //而不是把 512KB 的网格写盘。随机源不再走全局 rand()/srand()。
+    uint32_t worldSeed = static_cast<uint32_t>(time(nullptr));
+    //尺寸同样是运行期参数:默认 512x512,以后"世界规模选择"界面把玩家选的宽高传进这里。
+    world.init(DEFAULT_MAP_W, DEFAULT_MAP_H, 6, worldSeed);
 
     //画面坐标相对可见窗口,不修改终端尺寸或窗口样式。
     SMALL_RECT viewport = {-1, -1, -1, -1};
@@ -460,6 +462,9 @@ int main(){
                         writeText(column, listRow, "DEBUG ON", infoWidth);
                         listRow++;
                         writeText(column, listRow, "# density:" + to_string(world.resourceRate) + "%", infoWidth);
+                        listRow++;
+                        //种子显示出来才谈得上复现:嫌图太密/太稀时,把这个数报过来就够,不用截图。
+                        writeText(column, listRow, "seed:" + to_string(world.seed), infoWidth);
                         listRow++;
                         writeText(column, listRow, "F +10000#  T up  Y down", infoWidth);
                         listRow++;

@@ -2,7 +2,7 @@
 #define PYS_GAME_WORLD_H
 
 #include <cstdint>
-#include <cstdlib>
+#include <random>
 #include <vector>
 
 #include "game/types.h"
@@ -39,11 +39,21 @@ struct World{
     std::vector<Bot> bots;
     unsigned long long botDeadline = 0;          //下次允许迈步的时刻
 
-    //按指定规模分配网格并按当前密度铺图。开局、以及以后"选完世界规模"都走这里。
-    void init(int w, int h, int rate);
+    //随机源。seed 被记下来,是为了让"同一张图可以原样重建":
+    //调试时能看到、以后存档也只需要存这个数,而不是把整张网格写盘。
+    uint32_t seed = 0;
+    //引擎选 minstd_rand 而不是 mt19937:后者状态 25KB,嵌进对象就把 World 撑成 25KB(测试里
+    //"对象必须小"那条断言会失败)。按百分比撒点这种用途只需要一个便宜的引擎,而对象大小是长期约束。
+    std::minstd_rand rng;                          //只允许由下面的方法使用,外部别碰
 
-    //按当前密度重铺整张图,不重新分配尺寸(调试改密度时用)。
+    //按指定规模和种子分配网格并铺图。开局、以及以后"选完世界规模"都走这里。
+    void init(int w, int h, int rate, uint32_t s);
+
+    //按当前密度重铺整张图,不重新分配尺寸(调试改密度时用)。会消耗随机序列。
     void relayout();
+
+    //这一掷是否落在当前密度之内。所有"按百分比决定有没有矿"的判定都走这一处。
+    bool oreRoll();
 
     bool inBounds(int x, int y) const;
 

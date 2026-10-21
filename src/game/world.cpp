@@ -1,7 +1,5 @@
 #include "game/world.h"
 
-//注意: 这里仍使用全局 rand()/srand(),随机源注入是后续步骤的事。
-
 namespace {
 //网格是一维的,行优先。(x, y) 到数组下标的换算只允许出现在这一处。
 inline size_t cellIndex(int x, int y, int width){
@@ -9,20 +7,29 @@ inline size_t cellIndex(int x, int y, int width){
 }
 }
 
-void World::init(int w, int h, int rate){
+bool World::oreRoll(){
+    //百分比判定只有这一处实现:分布用 uniform_int_distribution,而不是对随机数取模。
+    //取模在 2^32 不能被 100 整除时会带来轻微不均匀,这里不省那一点开销。
+    return std::uniform_int_distribution<int>(0, 99)(rng) < resourceRate;
+}
+
+void World::init(int w, int h, int rate, uint32_t s){
     width = w;
     height = h;
     resourceRate = rate;
+    seed = s;
+    rng.seed(s);                                  //同一 seed 必得同一张图
     cells.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
     bots.clear();
     relayout();
 }
 
 void World::relayout(){
+    rng.seed(seed);                               //重铺从同一序列头开始:改密度不会连带把位置也换一套
     remainResource = 0;
     for(int row = 0; row < height; row++){
         for(int column = 0; column < width; column++){
-            uint16_t value = (rand() % 100 < resourceRate) ? 1 : 0;
+            uint16_t value = oreRoll() ? 1 : 0;
             cells[cellIndex(column, row, width)] = value;
             remainResource += value;
         }
@@ -53,7 +60,7 @@ void World::refillIfSparse(){
     for(int row = 0; row < height; row++){
         for(int column = 0; column < width; column++){
             size_t idx = cellIndex(column, row, width);
-            if(cells[idx] == 0 && rand() % 100 < resourceRate){
+            if(cells[idx] == 0 && oreRoll()){
                 cells[idx] = 1;
                 remainResource++;
             }
