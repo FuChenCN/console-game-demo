@@ -442,7 +442,7 @@ int main(){
                     writeText(column, 4, "Remaining:" + to_string(remainResource), infoWidth);
                     writeText(column, 6, "Map:128 x 32", infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
-                    writeText(column, 9, "WASD Move  E Collect", infoWidth);
+                    writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
                     writeText(column, 10, "Right Shop  Q Quit", infoWidth);
                     //正在运作的东西标在侧栏。只有 Auto Robot 会产生跑动单位,
                     //Bot Speedup 是全体提速,不单独占一行,而是体现在下面那个步长上。
@@ -477,7 +477,7 @@ int main(){
                     writeText(0, viewH + 1, position, width);
                     writeText(0, viewH + 2, "Collected:" + to_string(resourceCount), width);
                     writeText(0, viewH + 3, "Remaining:" + to_string(remainResource), width);
-                    writeText(0, viewH + 4, "WASD Move  E Collect", width);
+                    writeText(0, viewH + 4, "WASD Move  E/Space Collect", width);
                     writeText(0, viewH + 5, "Right Shop  Q Quit", width);
                 }
             }
