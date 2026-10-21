@@ -32,6 +32,31 @@ struct Bot{
     bool justAte;
 };
 
+//标题大字的像素字模:5 行 x 4 列,'#' 是实心格。只收录标题用到的 6 个字母。
+const string TITLE_GLYPHS[6][5] = {
+    {"####", "#   ", "#   ", "#   ", "####"},   //C
+    {"####", "#  #", "#  #", "#  #", "####"},   //O
+    {"#  #", "## #", "# ##", "#  #", "#  #"},   //N
+    {"####", "#   ", "####", "   #", "####"},   //S
+    {"#   ", "#   ", "#   ", "#   ", "####"},   //L
+    {"####", "#   ", "### ", "#   ", "####"},   //E
+};
+//CONSOLE 对应的下标序列。以后换标题文字,改这一行和上面的字模表就行。
+const int TITLE_LETTERS[7] = {0, 1, 2, 3, 1, 4, 5};
+
+//前景色循环表,相位按字母错开,横着看就是一段流动的渐变。
+const BYTE TITLE_COLORS[7] = {
+    FOREGROUND_RED,
+    FOREGROUND_RED | FOREGROUND_GREEN,
+    FOREGROUND_GREEN,
+    FOREGROUND_GREEN | FOREGROUND_BLUE,
+    FOREGROUND_BLUE,
+    FOREGROUND_BLUE | FOREGROUND_RED,
+    FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,
+};
+const int TITLE_STEPS_MS = 120;   //变色节奏,约 4 个主循环帧
+const int TITLE_COLOR_COUNT = 7;  //TITLE_COLORS 的长度,相位取模用它,别写死数字
+
 BOOL WINAPI HandleConsoleControl(DWORD event){
     if(event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
         return FALSE;
@@ -98,14 +123,21 @@ int main(){
     vector<CHAR_INFO> displayed;
     bool needsPresent = false;
     bool forceRedraw = true;
-    auto setCell = [&](int column, int row, char value){
-        if(column >= 0 && column < bufferSize.X && row >= 0 && row < bufferSize.Y)
-            frame[row * bufferSize.X + column].Char.AsciiChar = value;
+    //第四个参数是控制台颜色属性,传 -1 表示"不改这个格子的颜色"。
+    //lambda 的默认参数不能引用捕获的局部变量,所以这里用 -1 当哨兵;
+    //配合 changed 分支里的 fill(frame, blank),不传颜色就等于用终端默认色。
+    auto setCell = [&](int column, int row, char value, int attributes = -1){
+        if(column >= 0 && column < bufferSize.X && row >= 0 && row < bufferSize.Y){
+            int index = row * bufferSize.X + column;
+            frame[index].Char.AsciiChar = value;
+            if(attributes >= 0)
+                frame[index].Attributes = static_cast<BYTE>(attributes);
+        }
     };
-    auto writeText = [&](int column, int row, const string& text, int width){
+    auto writeText = [&](int column, int row, const string& text, int width, int attributes = -1){
         int count = min(width, static_cast<int>(text.size()));
         for(int offset = 0; offset < count; offset++)
-            setCell(column + offset, row, text[offset]);
+            setCell(column + offset, row, text[offset], attributes);
     };
     auto present = [&](){
         if(!needsPresent)
@@ -120,7 +152,9 @@ int main(){
             for(int row = 0; row < bufferSize.Y; row++){
                 for(int column = 0; column < bufferSize.X; column++){
                     int index = row * bufferSize.X + column;
-                    if(frame[index].Char.AsciiChar == displayed[index].Char.AsciiChar)
+                    //颜色也要比:只比字符的话,字不变、只变色的动画帧会被当成"没变化"而跳过提交。
+                    if(frame[index].Char.AsciiChar == displayed[index].Char.AsciiChar &&
+                       frame[index].Attributes == displayed[index].Attributes)
                         continue;
                     dirty.Left = static_cast<SHORT>(min<int>(dirty.Left, column));
                     dirty.Right = static_cast<SHORT>(max<int>(dirty.Right, column));
@@ -157,7 +191,10 @@ int main(){
     int x = 10;
     int y = 10;
     int resourceCount = 0;
-    int scene = 0;
+    //场景:0 采集,1 商店,2 标题。开局停在标题,按 Enter 才进采集页。
+    int scene = 2;
+    int titlePhase = 0;                                        //当前颜色相位
+    unsigned long long titleDeadline = GetTickCount64();       //下次推相位的时刻
     const int SHOP_ROBOT = 0;      //商品表里只有这一行会生成跑动单位
     const int SHOP_SPEEDUP = 1;    //这一行不改数量上限,而是给全体机器人提速
     const int SPEED_MAX = 4;       //Bot Speedup 最高买到第 4 档
@@ -250,8 +287,11 @@ int main(){
         for(const auto& key : keys){
             int code = key.wVirtualKeyCode;
             int repeat = max<int>(1, key.wRepeatCount);
-            if(code == VK_RIGHT) scene = 1;
-            if(code == VK_LEFT) scene = 0;
+            //标题页不响应左右切换,否则一进标题就被方向键带去商店场景。
+            if(scene != 2){
+                if(code == VK_RIGHT) scene = 1;
+                if(code == VK_LEFT) scene = 0;
+            }
             if(!canPlay)
                 continue;
             //调试短语逐键累积,采集和商店场景都能敲。只保留最后 9 个字母,
@@ -286,6 +326,12 @@ int main(){
                     layoutResource();
                     debugActed = true;
                 }
+            }
+            //标题页只认 Enter 开始采集,其余按键忽略(退出仍由前面 Q 的判断处理,调试键在上面那段处理)。
+            if(scene == 2){
+                if(code == VK_RETURN)
+                    scene = 0;   //scene 一变,下面的 changed 就会触发重绘
+                continue;
             }
             if(scene == 0){
                 //采集场景:WASD 移动,E 或空格采掉脚下的资源。
@@ -392,16 +438,68 @@ int main(){
                 }
             }
         }
+        //标题页每 TITLE_STEPS_MS 推一次颜色相位;不在标题页就不推,免得白耗重绘。
+        bool titleAnimated = false;
+        if(canPlay && scene == 2){
+            unsigned long long titleNow = GetTickCount64();
+            if(titleNow >= titleDeadline){
+                titleDeadline = titleNow + TITLE_STEPS_MS;
+                titlePhase = (titlePhase + 1) % TITLE_COLOR_COUNT;
+                titleAnimated = true;
+            }
+        }
         //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
                        resourceCount != oldResourceCount || remainResource != oldRemainResource ||
-                       shopChanged || botActed || debugActed;
+                       shopChanged || botActed || debugActed || titleAnimated;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
             needsPresent = true;
             if(!canPlay){
                 writeText(0, 0, "Resize terminal: minimum 32 x 12", width);
                 writeText(0, 1, "Q Quit", width);
+            }
+            else if(scene == 2){
+                //标题页。同一个色相分两层画:本体是亮色密实的 '#',阴影是暗色稀疏的 '.',各向右下偏一格。
+                //密度差叠加亮度差双重拉开,才不会和字体糊成一块;颜色相位按字母错开,整串字横向流动变色。
+                const int letterW = 4;
+                const int letterH = 5;
+                const int gap = 2;   //留两列:阴影会右偏一列,单列间隔会被暗色填满,字母看着粘连
+                const int wordW = 7 * (letterW + gap) - gap;   //CONSOLE 占 40 列
+                int startX = (width - (wordW + 1)) / 2;         //多留一列给阴影
+                int startY = max(1, (height - letterH) / 2 - 2);
+                if(width >= wordW + 6){
+                    for(int pass = 0; pass < 2; pass++){
+                        //pass 0 画暗色阴影(右下各偏一格),pass 1 画亮色本体。
+                        //必须分两趟,交错着画会让后画的阴影盖掉前一个字母的主体。
+                        bool shadow = (pass == 0);
+                        int offset = shadow ? 1 : 0;
+                        for(int letter = 0; letter < 7; letter++){
+                            BYTE hue = TITLE_COLORS[(letter + titlePhase) % TITLE_COLOR_COUNT];
+                            BYTE attr = shadow ? hue : static_cast<BYTE>(hue | FOREGROUND_INTENSITY);
+                            const string* glyph = TITLE_GLYPHS[TITLE_LETTERS[letter]];
+                            for(int row = 0; row < letterH; row++){
+                                for(int col = 0; col < letterW; col++){
+                                    if(glyph[row][col] != '#')
+                                        continue;
+                                    //阴影画成稀疏的 '.',主体是密实的 '#':控制台没有 alpha 通道,
+                                    //字符密度差就是能拿到的"半透明"。
+                                    setCell(startX + letter * (letterW + gap) + col + offset,
+                                            startY + row + offset, shadow ? '.' : '#', attr);
+                                }
+                            }
+                        }
+                    }
+                }
+                else{
+                    //窗口放不下 40 列大字,退化成一行带空格的普通字,标题至少还在。
+                    writeText(max(0, (width - 13) / 2), startY, "C O N S O L E", width,
+                              static_cast<BYTE>(TITLE_COLORS[titlePhase % TITLE_COLOR_COUNT] | FOREGROUND_INTENSITY));
+                }
+                int hintRow = startY + letterH + 2;
+                writeText(max(0, (width - 21) / 2), hintRow, "Press ENTER to start", width);
+                writeText(max(0, (width - 8) / 2), hintRow + 1, "PYS demo", width);
+                writeText(max(0, (width - 6) / 2), hintRow + 2, "Q Quit", width);
             }
             else if(scene == 0){
                 bool sidebar = width >= 80;
