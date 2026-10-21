@@ -208,7 +208,7 @@ int main(){
             if(code == 'S') y = min(MAP_H - 1, y + repeat);
             if(code == 'A') x = max(0, x - repeat);
             if(code == 'D') x = min(MAP_W - 1, x + repeat);
-            if(code == 'E' && resource[y][x]){
+            if((code == 'E' || code == VK_SPACE) && resource[y][x]){
                 resource[y][x] = false;
                 remainResource--;
                 resourceCount++;
