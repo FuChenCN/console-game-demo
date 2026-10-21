@@ -21,16 +21,31 @@ pwsh build.ps1    #递归收集 src 下所有 .cpp 一起编译,产物 .\PYS.exe
 
 ```
 src/
-  main.cpp            组装与主循环(第 1 步里状态仍集中在这里)
+  main.cpp            组装与主循环:键盘分发、界面选择、背包与商店这些会话状态
   platform/           只碰 Windows 控制台 API 的部分
     console_ctrl.*    退出标志与 Ctrl+C / Ctrl+Break 回调
   game/
     types.h           商品条目、机器人等类型定义
+    world.h/.cpp      被模拟的世界:资源网格、密度、剩余量、机器人推进
   content/
     title_assets.*    标题页的字模、字母排布、色板与变色节奏
+tests/
+  world_test.cpp      直接链接 src/game/world.cpp 的行为测试
+build.ps1             收集 src 下所有 .cpp 编译出 PYS.exe
+run_tests.ps1         编译并运行 tests/
 ```
 
 程序使用当前终端的可见区域绘制,支持运行时调整窗口大小和字体大小,不再强制设置窗口尺寸。运行时隐藏光标,退出时恢复。
+
+## 测试
+
+```powershell
+pwsh run_tests.ps1
+```
+
+`tests/` 下的用例直接链接 `src/game/world.cpp`,不开终端也不画屏幕,验证采集、机器人迈步与撞墙折返、密度重铺这些规则。
+
+判据: `src/game/` 里不该出现任何 Windows API(`windows.h`、`CHAR_INFO`、`VK_*`、`GetTickCount64`)。一旦出现,就说明有逻辑漏在那一层里,变成没法测试的代码。
 
 ## 操作
 
