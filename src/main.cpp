@@ -13,6 +13,7 @@
 
 #include "platform/console_ctrl.h"   //退出标志与 Ctrl+C/Ctrl+Break 回调
 #include "game/types.h"              //商品条目与机器人
+#include "game/world.h"              //资源网格、密度与机器人的推进规则
 #include "content/title_assets.h"    //标题页的字模、色板与节奏
 
 using namespace std;
@@ -45,25 +46,10 @@ int main(){
     CONSOLE_CURSOR_INFO hiddenCursor = {1, FALSE};
     SetConsoleCursorInfo(hConsole, &hiddenCursor);
 
-    const int MAP_W = 128;
-    const int MAP_H = 32;
-    //资源密度百分比。debug 模式下可以实时改,改完整张图立刻按新密度重铺。
-    int resourceRate = 6;
-    bool resource[MAP_H][MAP_W] = {};
-    int remainResource = 0;
+    //世界状态已收进 game/world.h:资源网格、密度、剩余量、机器人。
+    World world;
     srand(static_cast<unsigned int>(time(nullptr)));
-    //按当前密度重铺整张地图并重算剩余量。开局铺图和 debug 调密度共用这一份,避免两处写法走偏。
-    auto layoutResource = [&](){
-        remainResource = 0;
-        for(int row = 0; row < MAP_H; row++){
-            for(int column = 0; column < MAP_W; column++){
-                resource[row][column] = (rand() % 100 < resourceRate);
-                if(resource[row][column])
-                    remainResource++;
-            }
-        }
-    };
-    layoutResource();
+    world.layoutResource();
 
     //画面坐标相对可见窗口,不修改终端尺寸或窗口样式。
     SMALL_RECT viewport = {-1, -1, -1, -1};
@@ -162,8 +148,8 @@ int main(){
     };
     int shopSelection = 0;                          //商店光标指向的商品下标
     string shopNotice = "Pick an item, Enter to buy";  //商店底部反馈行
-    vector<Bot> bots;               //买一个多一个,主循环里按 owned 补齐
-    unsigned long long botDeadline = GetTickCount64() + BOT_SPEED_MS[0];
+    //机器人容器和迈步时刻都归 World 了;第一脚按初始档位排在开局一秒后。
+    world.botDeadline = GetTickCount64() + BOT_SPEED_MS[0];
     //调试模式的开门短语。存大写,因为字母键的 wVirtualKeyCode 本身就是大写码,与 Shift 无关。
     const string DEBUG_PHRASE = "OWOISHERE";
     string debugBuffer;             //最近按下的几个字母,只留够匹配短语的长度
@@ -229,7 +215,7 @@ int main(){
         int oldX = x;
         int oldY = y;
         int oldResourceCount = resourceCount;
-        int oldRemainResource = remainResource;
+        int oldRemainResource = world.remainResource;
         //商店里光标位置和反馈文字的变化,不属于上面那几个数值比较,单独用标志位记。
         bool shopChanged = false;
         //机器人迈步也算状态变化,同样要上报给下面的 changed,否则画面不动。
@@ -269,13 +255,13 @@ int main(){
                 }
                 if(code == 'T'){
                     //密度调完立刻重铺整张图,否则要等资源自己见底才看得出效果。
-                    resourceRate = min(100, resourceRate + 1);
-                    layoutResource();
+                    world.resourceRate = min(100, world.resourceRate + 1);
+                    world.layoutResource();
                     debugActed = true;
                 }
                 if(code == 'Y'){
-                    resourceRate = max(0, resourceRate - 1);
-                    layoutResource();
+                    world.resourceRate = max(0, world.resourceRate - 1);
+                    world.layoutResource();
                     debugActed = true;
                 }
             }
@@ -291,10 +277,8 @@ int main(){
                 if(code == 'S') y = min(MAP_H - 1, y + repeat);
                 if(code == 'A') x = max(0, x - repeat);
                 if(code == 'D') x = min(MAP_W - 1, x + repeat);
-                if((code == 'E' || code == VK_SPACE) && resource[y][x]){
-                    resource[y][x] = false;
-                    remainResource--;
-                    resourceCount++;
+                if((code == 'E' || code == VK_SPACE) && world.collectAt(x, y)){
+                    resourceCount++;   //扣地图资源、减剩余量都在 World 里做了,这里只记背包
                 }
                 continue;
             }
@@ -336,59 +320,16 @@ int main(){
             }
         }
         //机器人只在采集场景跑;切到商店时冻住,不会在看不见的地方偷偷吃资源。
+        //原来这里是两个同条件的 if,中间没有别的语句,合并成一个不改变语义。
         if(canPlay && scene == 0){
-            //按已购数量补齐单位,买一个就多一个。
-            while(static_cast<int>(bots.size()) < shopItems[SHOP_ROBOT].owned){
-                int index = static_cast<int>(bots.size());
-                Bot fresh;
-                fresh.x = 1;
-                //一行只站一个,从 y=0 的第一行开始依次往下排;32 行排满后 cap 就不让再买了。
-                fresh.y = index % MAP_H;
-                fresh.dir = 1;
-                fresh.justAte = false;
-                bots.push_back(fresh);
-            }
-            unsigned long long now = GetTickCount64();
-            if(now >= botDeadline){
-                //到点才迈步。下一次按当前时间重新排,卡顿掉的份额不会追补成一串脚步。
-                //步长取当前升级档位,买到 Bot Speedup 后下一脚就按新间隔走。
-                botDeadline = now + BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned];
-                botActed = true;
-                for(Bot& bot : bots){
-                    //先走到下一格,再看这一格有没有资源:吃到才亮出咬合的 =,否则保持张口的 < 或 >。
-                    bot.x += bot.dir;
-                    if(bot.x >= MAP_W - 1){
-                        //撞到右侧墙壁,换成朝左的 > 往回走。
-                        bot.x = MAP_W - 1;
-                        bot.dir = -1;
-                    }
-                    else if(bot.x <= 0){
-                        //左侧墙壁同理,换回 < 向右,如此往复。
-                        bot.x = 0;
-                        bot.dir = 1;
-                    }
-                    bot.justAte = false;
-                    if(resource[bot.y][bot.x]){
-                        //机器人采到的资源直接进背包,和玩家亲手采的记在同一笔账上。
-                        resource[bot.y][bot.x] = false;
-                        remainResource--;
-                        resourceCount++;
-                        bot.justAte = true;
-                    }
-                }
-            }
-        }
-        if(canPlay && scene == 0){
-            if(remainResource <= 50){
-                for(int row = 0; row < MAP_H; row++){
-                    for(int column = 0; column < MAP_W; column++){
-                        if(!resource[row][column] && rand() % 100 < resourceRate){
-                            resource[row][column] = true;
-                            remainResource++;
-                        }
-                    }
-                }
-            }
+            world.syncBots(shopItems[SHOP_ROBOT].owned);
+            //步长取当前升级档位,买到 Bot Speedup 后下一脚就按新间隔走。
+            BotStep step = world.advanceBots(GetTickCount64(),
+                                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned]);
+            //机器人吃掉的资源进背包:扣地图和减剩余量都在 World 里做完了,这里只加计数。
+            resourceCount += step.collected;
+            botActed = step.moved;
+            world.refillIfSparse();
         }
         //标题页每 TITLE_STEPS_MS 推一次颜色相位;不在标题页就不推,免得白耗重绘。
         bool titleAnimated = false;
@@ -402,7 +343,7 @@ int main(){
         }
         //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
-                       resourceCount != oldResourceCount || remainResource != oldRemainResource ||
+                       resourceCount != oldResourceCount || world.remainResource != oldRemainResource ||
                        shopChanged || botActed || debugActed || titleAnimated;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
@@ -464,12 +405,12 @@ int main(){
                         int mapX = cameraX + column;
                         int mapY = cameraY + row;
                         char value = mapX == x && mapY == y ? '@' :
-                                     (resource[mapY][mapX] ? '#' : ' ');
+                                     (world.resource[mapY][mapX] ? '#' : ' ');
                         setCell(column, row, value);
                     }
                 }
                 //机器人盖在资源之上、玩家之下:它踩到的 # 被符号顶掉,但玩家 @ 优先,重叠时不画机器人。
-                for(const Bot& bot : bots){
+                for(const Bot& bot : world.bots){
                     if(bot.x == x && bot.y == y)
                         continue;
                     int screenX = bot.x - cameraX;
@@ -489,7 +430,7 @@ int main(){
                     writeText(column, 0, "PYS", infoWidth);
                     writeText(column, 2, position, infoWidth);
                     writeText(column, 3, "Collected:" + to_string(resourceCount), infoWidth);
-                    writeText(column, 4, "Remaining:" + to_string(remainResource), infoWidth);
+                    writeText(column, 4, "Remaining:" + to_string(world.remainResource), infoWidth);
                     writeText(column, 6, "Map:128 x 32", infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
@@ -500,7 +441,7 @@ int main(){
                     int listRow = 12;
                     writeText(column, listRow, "Running:", infoWidth);
                     listRow++;
-                    writeText(column, listRow, "Bots:" + to_string(bots.size()) + "/" + to_string(MAP_H), infoWidth);
+                    writeText(column, listRow, "Bots:" + to_string(world.bots.size()) + "/" + to_string(MAP_H), infoWidth);
                     listRow++;
                     //步长按已购档位取,格式化成两位小数:1000ms 显示 1.00s,100ms 显示 0.10s。
                     char speedText[16];
@@ -514,7 +455,7 @@ int main(){
                         listRow++;
                         writeText(column, listRow, "DEBUG ON", infoWidth);
                         listRow++;
-                        writeText(column, listRow, "# density:" + to_string(resourceRate) + "%", infoWidth);
+                        writeText(column, listRow, "# density:" + to_string(world.resourceRate) + "%", infoWidth);
                         listRow++;
                         writeText(column, listRow, "F +10000#  T up  Y down", infoWidth);
                         listRow++;
@@ -526,7 +467,7 @@ int main(){
                         setCell(column, viewH, '-');
                     writeText(0, viewH + 1, position, width);
                     writeText(0, viewH + 2, "Collected:" + to_string(resourceCount), width);
-                    writeText(0, viewH + 3, "Remaining:" + to_string(remainResource), width);
+                    writeText(0, viewH + 3, "Remaining:" + to_string(world.remainResource), width);
                     writeText(0, viewH + 4, "WASD Move  E/Space Collect", width);
                     writeText(0, viewH + 5, "Right Shop  Q Quit", width);
                 }
