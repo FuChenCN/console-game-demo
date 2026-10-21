@@ -1,21 +1,21 @@
 {
-    // See https://go.microsoft.com/fwlink/?LinkId=733558
-    // for the documentation about the tasks.json format
+    // 构建走仓库根目录的 build.ps1:它自己收集 src 下所有 .cpp。
+    // 拆分多文件后不能再编译"当前活动文件",那样链接不到其它编译单元的符号。
     "version": "2.0.0",
     "tasks": [
         {
-            "type": "cppbuild",
-            "label": "C/C++:g++.exe build active file",
-            "command": "g++",
-            "args":[
-                "-fdiagnostics-color=always",
-                "-g",
-                "${file}",
-                "-o",
-                "${fileDirname}\\${fileBasenameNoExtension}.exe",
+            "label": "build PYS (all sources)",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/build.ps1"
             ],
             "options": {
-                "cwd": "${fileDirname}"
+                "cwd": "${workspaceFolder}"
             },
             "problemMatcher": [
                 "$gcc"
@@ -24,7 +24,7 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": " 编译器：g++"
+            "detail": " 编译器：g++，源文件由 build.ps1 自动收集"
         }
     ]
 }

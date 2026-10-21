@@ -6,14 +6,29 @@
 
 ## 运行
 
-需要 Windows + MinGW g++(或 MSVC)。
+需要 Windows + PowerShell + MinGW g++。
 
 ```powershell
-g++ -std=c++17 -O2 test.cpp -o PYS.exe
+pwsh build.ps1    #递归收集 src 下所有 .cpp 一起编译,产物 .\PYS.exe
 ./PYS.exe
 ```
 
-VS Code 用户可直接使用仓库内的 `.vscode/tasks.json` 构建(任务:`C/C++:g++.exe build active file`)。
+`build.ps1` 自己扫源文件,加新 `.cpp` 不用改脚本、也不用改 `.vscode/tasks.json`(默认构建任务是 `build PYS (all sources)`)。
+
+拆分后**不要再单独编译某个文件**,那样链接不到其它编译单元的符号;旧任务 `C/C++:g++.exe build active file` 已从 `tasks.json` 移除。
+
+## 目录结构
+
+```
+src/
+  main.cpp            组装与主循环(第 1 步里状态仍集中在这里)
+  platform/           只碰 Windows 控制台 API 的部分
+    console_ctrl.*    退出标志与 Ctrl+C / Ctrl+Break 回调
+  game/
+    types.h           商品条目、机器人等类型定义
+  content/
+    title_assets.*    标题页的字模、字母排布、色板与变色节奏
+```
 
 程序使用当前终端的可见区域绘制,支持运行时调整窗口大小和字体大小,不再强制设置窗口尺寸。运行时隐藏光标,退出时恢复。
 
