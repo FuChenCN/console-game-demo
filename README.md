@@ -17,6 +17,17 @@ pwsh build.ps1    #递归收集 src 下所有 .cpp 一起编译,产物 .\PYS.exe
 
 拆分后**不要再单独编译某个文件**,那样链接不到其它编译单元的符号;旧任务 `C/C++:g++.exe build active file` 已从 `tasks.json` 移除。
 
+## 命令行
+
+```powershell
+.\PYS.exe --seed 12345                #复现同一张初始地图
+.\PYS.exe --size 1024x512             #地图尺寸,默认 512x512
+$env:PYS_SEED = "12345"; .\PYS.exe    #双击运行时没有命令行参数,走环境变量
+.\PYS.exe --help
+```
+
+调试面板(`owoishere`)会显示当前 `seed:`;把那个数填回 `--seed` 就能重开同一张图。尺寸或种子填错不会让程序崩:非法值会打印一行说明并回退,尺寸被 `World::init` 拒绝时回退默认规模。提示文字用英文,因为宿主终端常是 GBK/936,中文提示可能显示成乱码。
+
 ## 目录结构
 
 ```
