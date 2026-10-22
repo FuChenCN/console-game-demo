@@ -1,22 +1,52 @@
 #include "game/world.h"
 
-//注意: 这里还用全局 rand()/srand(),随机源注入是路线第 3 步的事。
+#include <stdexcept>
 
-void World::layoutResource(){
+//注意: 这里仍使用全局 rand()/srand(),随机源注入是后续步骤的事。
+
+namespace {
+//网格是一维的,行优先。(x, y) 到数组下标的换算只允许出现在这一处。
+inline size_t cellIndex(int x, int y, int width){
+    return static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+}
+}
+
+void World::init(int w, int h, int rate){
+    if(w <= 0 || h <= 0)
+        throw std::invalid_argument("world dimensions must be positive");
+    width = w;
+    height = h;
+    resourceRate = rate;
+    cells.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
+    bots.clear();
+    relayout();
+}
+
+void World::relayout(){
     remainResource = 0;
-    for(int row = 0; row < MAP_H; row++){
-        for(int column = 0; column < MAP_W; column++){
-            resource[row][column] = (rand() % 100 < resourceRate);
-            if(resource[row][column])
-                remainResource++;
+    for(int row = 0; row < height; row++){
+        for(int column = 0; column < width; column++){
+            uint16_t value = (rand() % 100 < resourceRate) ? 1 : 0;
+            cells[cellIndex(column, row, width)] = value;
+            remainResource += value;
         }
     }
 }
 
-bool World::collectAt(int x, int y){
-    if(!resource[y][x])
+bool World::inBounds(int x, int y) const{
+    return x >= 0 && x < width && y >= 0 && y < height;
+}
+
+bool World::hasResource(int x, int y) const{
+    if(!inBounds(x, y))
         return false;
-    resource[y][x] = false;
+    return cells[cellIndex(x, y, width)] != 0;
+}
+
+bool World::collectAt(int x, int y){
+    if(!hasResource(x, y))
+        return false;
+    cells[cellIndex(x, y, width)] = 0;
     remainResource--;
     return true;
 }
@@ -24,10 +54,11 @@ bool World::collectAt(int x, int y){
 void World::refillIfSparse(){
     if(remainResource > 50)
         return;
-    for(int row = 0; row < MAP_H; row++){
-        for(int column = 0; column < MAP_W; column++){
-            if(!resource[row][column] && rand() % 100 < resourceRate){
-                resource[row][column] = true;
+    for(int row = 0; row < height; row++){
+        for(int column = 0; column < width; column++){
+            size_t idx = cellIndex(column, row, width);
+            if(cells[idx] == 0 && rand() % 100 < resourceRate){
+                cells[idx] = 1;
                 remainResource++;
             }
         }
@@ -40,8 +71,9 @@ void World::syncBots(int ownedRobots){
         int index = static_cast<int>(bots.size());
         Bot fresh;
         fresh.x = 1;
-        //一行只站一个,从 y=0 的第一行开始依次往下排;排满 MAP_H 行后 cap 就不让再买了。
-        fresh.y = index % MAP_H;
+        //一只机器人占一行,从 y=0 的第一行开始往下排。"上限=行数"是逐行运行模型的产物,
+        //改成放置式矿机之后这条会连同商品表的 cap 一起替换掉。
+        fresh.y = index % height;
         fresh.dir = 1;
         fresh.justAte = false;
         bots.push_back(fresh);
@@ -58,9 +90,9 @@ BotStep World::advanceBots(unsigned long long now, int stepMs){
     for(Bot& bot : bots){
         //先走到下一格,再看这一格有没有资源:吃到才亮出咬合的 =,否则保持张口的 < 或 >。
         bot.x += bot.dir;
-        if(bot.x >= MAP_W - 1){
+        if(bot.x >= width - 1){
             //撞到右侧墙壁,换成朝左的 > 往回走。
-            bot.x = MAP_W - 1;
+            bot.x = width - 1;
             bot.dir = -1;
         }
         else if(bot.x <= 0){
@@ -69,10 +101,8 @@ BotStep World::advanceBots(unsigned long long now, int stepMs){
             bot.dir = 1;
         }
         bot.justAte = false;
-        if(resource[bot.y][bot.x]){
-            //机器人采到的资源走和玩家同一笔账,但背包计数交给调用方加,World 不碰。
-            resource[bot.y][bot.x] = false;
-            remainResource--;
+        //采集走和玩家同一套口径,扣减只有一处实现。
+        if(collectAt(bot.x, bot.y)){
             bot.justAte = true;
             out.collected++;
         }

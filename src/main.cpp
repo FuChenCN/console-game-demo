@@ -46,10 +46,11 @@ int main(){
     CONSOLE_CURSOR_INFO hiddenCursor = {1, FALSE};
     SetConsoleCursorInfo(hConsole, &hiddenCursor);
 
-    //世界状态已收进 game/world.h:资源网格、密度、剩余量、机器人。
+    //世界状态已收进 game/world.h:网格、密度、剩余量、机器人。
     World world;
     srand(static_cast<unsigned int>(time(nullptr)));
-    world.layoutResource();
+    //尺寸改成了运行期参数:默认 512x512,以后"世界规模选择"界面把玩家选的宽高传进这里。
+    world.init(DEFAULT_MAP_W, DEFAULT_MAP_H, 6);
 
     //画面坐标相对可见窗口,不修改终端尺寸或窗口样式。
     SMALL_RECT viewport = {-1, -1, -1, -1};
@@ -126,8 +127,9 @@ int main(){
         }
     };
 
-    int x = 10;
-    int y = 10;
+    //玩家出生在世界中心。原先写死的 10,10 是按 128x32 那张图定的,放到 512x512 就成了贴左上角。
+    int x = world.width / 2;
+    int y = world.height / 2;
     int resourceCount = 0;
     //场景:0 采集,1 商店,2 标题。开局停在标题,按 Enter 才进采集页。
     int scene = 2;
@@ -141,7 +143,7 @@ int main(){
     //商品表驱动商店的画面和购买:加新商品只需在这里多填一行,选择、渲染、扣费、上限都跟着走。
     //后面两项是留出来的空位(available=false),给后续 commit 填实际商品。
     vector<ShopItem> shopItems = {
-        {"Auto Robot", 100, 0, true, MAP_H},      //一行只能站一个,32 行买满就锁死
+        {"Auto Robot", 100, 0, true, world.height},   //一行只能站一个,上限就是地图行数(改成放置式矿机后替换掉)
         {"Bot Speedup", 1000, 0, true, SPEED_MAX},//五档升级,买满第 4 档到顶
         {"", 0, 0, false, 0},
         {"", 0, 0, false, 0},
@@ -256,12 +258,12 @@ int main(){
                 if(code == 'T'){
                     //密度调完立刻重铺整张图,否则要等资源自己见底才看得出效果。
                     world.resourceRate = min(100, world.resourceRate + 1);
-                    world.layoutResource();
+                    world.relayout();
                     debugActed = true;
                 }
                 if(code == 'Y'){
                     world.resourceRate = max(0, world.resourceRate - 1);
-                    world.layoutResource();
+                    world.relayout();
                     debugActed = true;
                 }
             }
@@ -274,9 +276,9 @@ int main(){
             if(scene == 0){
                 //采集场景:WASD 移动,E 或空格采掉脚下的资源。
                 if(code == 'W') y = max(0, y - repeat);
-                if(code == 'S') y = min(MAP_H - 1, y + repeat);
+                if(code == 'S') y = min(world.height - 1, y + repeat);
                 if(code == 'A') x = max(0, x - repeat);
-                if(code == 'D') x = min(MAP_W - 1, x + repeat);
+                if(code == 'D') x = min(world.width - 1, x + repeat);
                 if((code == 'E' || code == VK_SPACE) && world.collectAt(x, y)){
                     resourceCount++;   //扣地图资源、减剩余量都在 World 里做了,这里只记背包
                 }
@@ -396,16 +398,18 @@ int main(){
             }
             else if(scene == 0){
                 bool sidebar = width >= 80;
-                int viewW = min(MAP_W, width - (sidebar ? 31 : 0));
-                int viewH = min(MAP_H, height - (sidebar ? 0 : 6));
-                int cameraX = clamp(x - viewW / 2, 0, MAP_W - viewW);
-                int cameraY = clamp(y - viewH / 2, 0, MAP_H - viewH);
+                //注意两套尺寸:width / height 是终端窗口大小,world.width / world.height 是地图大小。
+                //地图可以远大于窗口,所以视口要 clamp 在地图范围内跟随玩家滚动。
+                int viewW = min(world.width, width - (sidebar ? 31 : 0));
+                int viewH = min(world.height, height - (sidebar ? 0 : 6));
+                int cameraX = clamp(x - viewW / 2, 0, world.width - viewW);
+                int cameraY = clamp(y - viewH / 2, 0, world.height - viewH);
                 for(int row = 0; row < viewH; row++){
                     for(int column = 0; column < viewW; column++){
                         int mapX = cameraX + column;
                         int mapY = cameraY + row;
                         char value = mapX == x && mapY == y ? '@' :
-                                     (world.resource[mapY][mapX] ? '#' : ' ');
+                                     (world.hasResource(mapX, mapY) ? '#' : ' ');
                         setCell(column, row, value);
                     }
                 }
@@ -431,7 +435,7 @@ int main(){
                     writeText(column, 2, position, infoWidth);
                     writeText(column, 3, "Collected:" + to_string(resourceCount), infoWidth);
                     writeText(column, 4, "Remaining:" + to_string(world.remainResource), infoWidth);
-                    writeText(column, 6, "Map:128 x 32", infoWidth);
+                    writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
                     writeText(column, 10, "Right Shop  Q Quit", infoWidth);
@@ -441,7 +445,7 @@ int main(){
                     int listRow = 12;
                     writeText(column, listRow, "Running:", infoWidth);
                     listRow++;
-                    writeText(column, listRow, "Bots:" + to_string(world.bots.size()) + "/" + to_string(MAP_H), infoWidth);
+                    writeText(column, listRow, "Bots:" + to_string(world.bots.size()) + "/" + to_string(world.height), infoWidth);
                     listRow++;
                     //步长按已购档位取,格式化成两位小数:1000ms 显示 1.00s,100ms 显示 0.10s。
                     char speedText[16];
