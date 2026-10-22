@@ -1,5 +1,7 @@
 #include "game/world.h"
 
+#include <stdexcept>
+
 namespace {
 //网格是一维的,行优先。(x, y) 到数组下标的换算只允许出现在这一处。
 inline size_t cellIndex(int x, int y, int width){
@@ -9,11 +11,13 @@ inline size_t cellIndex(int x, int y, int width){
 
 bool World::oreRoll(){
     //百分比判定只有这一处实现:分布用 uniform_int_distribution,而不是对随机数取模。
-    //取模在 2^32 不能被 100 整除时会带来轻微不均匀,这里不省那一点开销。
+    //引擎输出范围不能被 100 整除时,直接取模会引入偏差。
     return std::uniform_int_distribution<int>(0, 99)(rng) < resourceRate;
 }
 
 void World::init(int w, int h, int rate, uint32_t s){
+    if(w <= 0 || h <= 0)
+        throw std::invalid_argument("world dimensions must be positive");
     width = w;
     height = h;
     resourceRate = rate;

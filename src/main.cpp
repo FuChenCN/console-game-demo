@@ -48,8 +48,8 @@ int main(){
 
     //世界状态已收进 game/world.h:网格、密度、剩余量、机器人。
     World world;
-    //地图由种子决定,种子要留在手上:调试面板把它显示出来,以后存档也只需记这个数,
-    //而不是把 512KB 的网格写盘。随机源不再走全局 rand()/srand()。
+    //种子用于重建初始分布并显示在调试面板;存档还要记录运行期变化和随机引擎状态。
+    //随机源不再走全局 rand()/srand()。
     uint32_t worldSeed = static_cast<uint32_t>(time(nullptr));
     //尺寸同样是运行期参数:默认 512x512,以后"世界规模选择"界面把玩家选的宽高传进这里。
     world.init(DEFAULT_MAP_W, DEFAULT_MAP_H, 6, worldSeed);

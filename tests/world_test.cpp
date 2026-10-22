@@ -2,6 +2,7 @@
 #include "game/world.h"
 
 #include <cstdio>
+#include <stdexcept>
 
 static int failures = 0;
 static void check(const char* what, bool ok){
@@ -52,6 +53,40 @@ int main(){
 
         printf("  INFO  seed 12345 at rate=30%% on 64x32 -> remain = %d (deterministic now)\n",
                b.remainResource);
+    }
+
+    printf("\n=== invalid dimensions are rejected without changing the world ===\n");
+    {
+        World w;
+        w.init(8, 4, 100, 12345u);
+        w.syncBots(1);
+        w.botDeadline = 1234;
+        const auto originalCells = w.cells;
+        const Bot originalBot = w.bots.front();
+        const auto originalSeed = w.seed;
+        const auto originalRng = w.rng;
+        const int invalidSizes[][2] = {{0, 4}, {8, 0}, {-1, 4}, {8, -1}};
+        for(const auto& size : invalidSizes){
+            printf("  input: %d x %d\n", size[0], size[1]);
+            bool rejected = false;
+            try{
+                w.init(size[0], size[1], 0, 99999u);
+            }
+            catch(const std::invalid_argument&){
+                rejected = true;
+            }
+            check("nonpositive size throws invalid_argument", rejected);
+            check("dimensions and grid stay unchanged",
+                  w.width == 8 && w.height == 4 && w.cells == originalCells);
+            check("resource bookkeeping stays unchanged",
+                  w.resourceRate == 100 && w.remainResource == 32);
+            check("seed and random engine stay unchanged",
+                  w.seed == originalSeed && w.rng == originalRng);
+            check("bots and deadline stay unchanged",
+                  w.botDeadline == 1234 && w.bots.size() == 1 &&
+                  w.bots[0].x == originalBot.x && w.bots[0].y == originalBot.y &&
+                  w.bots[0].dir == originalBot.dir && w.bots[0].justAte == originalBot.justAte);
+        }
     }
 
     printf("\n=== storage is on the heap and sized at runtime ===\n");
