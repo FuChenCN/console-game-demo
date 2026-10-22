@@ -2,7 +2,7 @@
 #include "game/world.h"
 
 #include <cstdio>
-#include <stdexcept>
+#include <string>
 
 static int failures = 0;
 static void check(const char* what, bool ok){
@@ -10,243 +10,276 @@ static void check(const char* what, bool ok){
     if(!ok) failures++;
 }
 
-//测试需要摆出特定布局。cells 是一维的、行优先,而且 remainResource 必须与它保持一致
-//(这条不变量写在 World 的注释里),所以改动只能走这里,不在用例里散着写。
-static void setOre(World& w, int x, int y, bool has){
-    size_t idx = static_cast<size_t>(y) * static_cast<size_t>(w.width) + static_cast<size_t>(x);
-    uint16_t want = has ? 1 : 0;
-    if(w.cells[idx] == want)
-        return;
-    w.cells[idx] = want;
-    w.remainResource += has ? 1 : -1;
+//在真实生成的图里找一条脉的任意一格,测试不手工摆格子:
+//池模型下"格子只存归属 id",手摆出来的脉没有 Deposit 条目,测不到真实路径。
+static bool anyOreCell(const World& w, int& x, int& y, int& id){
+    for(int row = 0; row < w.height; row++){
+        for(int col = 0; col < w.width; col++){
+            int found = w.depositAt(col, row);
+            if(found != NO_DEPOSIT){
+                x = col; y = row; id = found;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static int oreCellCount(const World& w){
+    int n = 0;
+    for(size_t i = 0; i < w.cells.size(); i++)
+        if(w.cells[i] != NO_DEPOSIT)
+            n++;
+    return n;
+}
+
+//还剩下多少格属于这条脉:枯竭时应当整条撤走,这里就是用来确认"一根不剩"的。
+static int oreCellCountOfId(const World& w, int id){
+    int n = 0;
+    for(size_t i = 0; i < w.cells.size(); i++)
+        if(w.cells[i] == static_cast<uint16_t>(id))
+            n++;
+    return n;
 }
 
 int main(){
-    printf("=== map is reproducible from its seed ===\n");
-    {
-        World a, b;
-        a.init(64, 32, 30, 12345u);
-        b.init(64, 32, 30, 12345u);
-        check("same seed gives byte-identical maps", a.cells == b.cells);
-        check("and the same remaining count", a.remainResource == b.remainResource);
-        check("seed is recorded on the object", a.seed == 12345u);
-
-        World c;
-        c.init(64, 32, 30, 99999u);
-        check("a different seed gives a different map", a.cells != c.cells);
-
-        //重铺从同一序列头重播,所以改密度不会顺手把已有资源换个位置。
-        a.relayout();
-        check("relayout replays the same sequence", a.cells == b.cells);
-
-        //同一条随机序列、只把门槛放宽,低密度的格子必然是高密度的子集。
-        World loose;
-        loose.init(64, 32, 30, 12345u);
-        loose.resourceRate = 60;
-        loose.relayout();
-        bool superset = true;
-        for(size_t i = 0; i < b.cells.size(); i++)
-            if(b.cells[i] != 0 && loose.cells[i] == 0)
-                superset = false;
-        check("raising density keeps every previous cell", superset);
-        check("and adds more", loose.remainResource > b.remainResource);
-
-        printf("  INFO  seed 12345 at rate=30%% on 64x32 -> remain = %d (deterministic now)\n",
-               b.remainResource);
-    }
-
-    printf("\n=== invalid dimensions are rejected without changing the world ===\n");
+    printf("=== storage and runtime size ===\n");
     {
         World w;
-        w.init(8, 4, 100, 12345u);
+        w.init(48, 24, 8, 7u);
+        check("object stays small, grid lives on the heap", sizeof(World) < 512);
+        check("cells sized width*height", w.cells.size() == 48 * 24);
+        check("runtime size honored", w.width == 48 && w.height == 24);
+        check("nothing discovered at start",
+              [&]{ for(const Deposit& d : w.deposits) if(d.discovered) return false; return true; }());
         w.syncBots(1);
-        w.botDeadline = 1234;
-        const auto originalCells = w.cells;
-        const Bot originalBot = w.bots.front();
-        const auto originalSeed = w.seed;
-        const auto originalRng = w.rng;
-        const int invalidSizes[][2] = {{0, 4}, {8, 0}, {-1, 4}, {8, -1}};
-        for(const auto& size : invalidSizes){
-            printf("  input: %d x %d\n", size[0], size[1]);
-            bool rejected = false;
-            try{
-                w.init(size[0], size[1], 0, 99999u);
-            }
-            catch(const std::invalid_argument&){
-                rejected = true;
-            }
-            check("nonpositive size throws invalid_argument", rejected);
-            check("dimensions and grid stay unchanged",
-                  w.width == 8 && w.height == 4 && w.cells == originalCells);
-            check("resource bookkeeping stays unchanged",
-                  w.resourceRate == 100 && w.remainResource == 32);
-            check("seed and random engine stay unchanged",
-                  w.seed == originalSeed && w.rng == originalRng);
-            check("bots and deadline stay unchanged",
-                  w.botDeadline == 1234 && w.bots.size() == 1 &&
-                  w.bots[0].x == originalBot.x && w.bots[0].y == originalBot.y &&
-                  w.bots[0].dir == originalBot.dir && w.bots[0].justAte == originalBot.justAte);
-        }
-    }
-
-    printf("\n=== storage is on the heap and sized at runtime ===\n");
-    {
-        World w;
-        w.init(64, 16, 0, 1u);
-        check("object itself stays small", sizeof(World) < 512);
-        check("cells sized width*height", w.cells.size() == 64 * 16);
-        check("runtime size honored", w.width == 64 && w.height == 16);
+        w.init(48, 24, 8, 7u);
+        check("init clears bots", w.bots.empty());
 
         World big;
-        big.init(512, 512, 0, 1u);
-        check("same code handles 512x512", big.cells.size() == 512u * 512u);
-        //init 会清空机器人:新世界不该带着旧世界的机器。
-        big.syncBots(2);
-        big.init(64, 64, 0, 1u);
-        check("init clears bots from the previous world", big.bots.empty());
+        big.init(512, 512, 8, 7u);
+        check("512x512 allocates and generates", big.cells.size() == 512u * 512u && !big.deposits.empty());
+        check("ids fit in the 16 bit grid", big.deposits.size() < 65534);
     }
 
-    printf("\n=== bounds are safe ===\n");
+    printf("\n=== invalid sizes are rejected by World's own contract ===\n");
     {
         World w;
-        w.init(8, 4, 0, 1u);
-        check("inBounds rejects negative", w.inBounds(-1, 0) == false);
-        check("inBounds rejects far x", w.inBounds(8, 0) == false);
-        check("inBounds rejects far y", w.inBounds(0, 4) == false);
-        check("inBounds accepts the corner", w.inBounds(7, 3) == true);
-        check("hasResource off the map returns false, no crash", w.hasResource(9999, 9999) == false);
-        check("collectAt off the map is a no-op", w.collectAt(-3, 7) == false);
+        w.init(48, 24, 8, 7u);
+        const auto cells = w.cells;
+        bool threw = false;
+        try{ w.init(0, 24, 8, 7u); } catch(const std::invalid_argument&){ threw = true; }
+        check("zero width throws", threw);
+        check("grid untouched by the rejected call", w.cells == cells);
+        threw = false;
+        try{ w.init(48, -1, 8, 7u); } catch(const std::invalid_argument&){ threw = true; }
+        check("negative height throws", threw);
     }
 
-    printf("\n=== collectAt ===\n");
+    printf("\n=== generator shape ===\n");
     {
         World w;
-        w.init(32, 8, 0, 1u);
-        setOre(w, 5, 2, true);
-        check("empty cell returns false", w.collectAt(6, 2) == false);
-        check("empty cell leaves remain untouched", w.remainResource == 1);
-        check("occupied cell returns true", w.collectAt(5, 2) == true);
-        check("cell cleared", w.hasResource(5, 2) == false);
-        check("remain decremented", w.remainResource == 0);
-        check("second pick returns false", w.collectAt(5, 2) == false);
+        w.init(128, 128, 8, 42u);                 //16384 格,8% 目标约 1310 格
+        double actual = oreCellCount(w) * 100.0 / (128 * 128);
+        printf("  INFO  coverage measured %.2f%% over %d veins\n", actual, (int)w.deposits.size());
+        check("coverage lands near the requested 8%", actual > 5.0 && actual < 11.0);
+        check("more than one vein on a 128x128 map", w.deposits.size() > 1);
+
+        bool sizesOk = true, idsOk = true, totalsOk = true;
+        for(size_t i = 0; i < w.deposits.size(); i++){
+            const Deposit& d = w.deposits[i];
+            if(d.cellCount < DEPOSIT_MIN_CELLS || d.cellCount > DEPOSIT_MAX_CELLS)
+                sizesOk = false;
+            if(d.id != static_cast<int>(i) + 1)
+                idsOk = false;                      //id 必须连续且从 1 起:格子存的就是它
+            if(d.total != d.cellCount * ORE_PER_CELL || d.remaining != d.total)
+                totalsOk = false;
+        }
+        check("every vein is within [32,128] cells", sizesOk);
+        check("ids are 1..n with no gaps", idsOk);
+        check("total = area x 100#, remaining starts full", totalsOk);
+
+        //玩家出生在地图中心,首条脉必须盖住那里,否则开局无矿可采。
+        check("first vein is seeded at the map centre",
+              [&]{
+                  int id = w.depositAt(w.width / 2, w.height / 2);
+                  return id == 1 && w.findDeposit(id) != nullptr;
+              }());
+
+        World bare;
+        bare.init(64, 64, 0, 5u);
+        check("coverage 0 produces no veins", bare.deposits.empty() && oreCellCount(bare) == 0);
     }
 
-    printf("\n=== syncBots: one bot per row, first row is y=0 ===\n");
+    printf("\n=== discovery gates both rendering and mining ===\n");
     {
         World w;
-        w.init(40, 8, 0, 1u);
-        w.syncBots(3);
-        check("three bots created", w.bots.size() == 3);
-        check("first bot starts at x=1, y=0", w.bots[0].x == 1 && w.bots[0].y == 0);
-        check("second bot on row 1", w.bots[1].y == 1);
-        check("all start facing right", w.bots[0].dir == 1 && w.bots[2].dir == 1);
-        w.syncBots(2);
-        check("shrinking owned does not remove bots", w.bots.size() == 3);
-        w.syncBots(w.height);
-        bool everyRow = true;
-        for(int row = 0; row < w.height; row++)
-            if(w.bots[row].y != row)
-                everyRow = false;
-        check("rows 0..height-1 each used exactly once", w.bots.size() == static_cast<size_t>(w.height) && everyRow);
-        check("row limit follows runtime height", w.height == 8);
+        w.init(128, 128, 8, 42u);
+        int x = 0, y = 0, id = 0;
+        anyOreCell(w, x, y, id);
+        check("an undiscovered vein does not draw as ore", w.showsOre(x, y) == false);
+        check("and cannot be mined", w.takeFrom(x, y, 5) == 0);
+        check("its pool is intact after a refused mine", w.findDeposit(id)->remaining == w.findDeposit(id)->total);
+
+        int lit = w.probeAt(x, y);
+        check("probing reports the vein it revealed", lit == 1);
+        check("after probing it draws", w.showsOre(x, y) == true);
+        check("and can be mined", w.takeFrom(x, y, 1) == 1);
+        check("probing the same spot again reveals nothing new", w.probeAt(x, y) == 0);
+
+        //点亮的是整条脉,不是被碰到的那几格:格子只存归属,所以一次翻转即见全貌。
+        const Deposit& d = *w.findDeposit(id);
+        int far = 0;
+        for(int row = d.minY; row <= d.maxY; row++)
+            for(int col = d.minX; col <= d.maxX; col++)
+                if(w.depositAt(col, row) == id && w.showsOre(col, row))
+                    far++;
+        check("one probe reveals the whole vein, not just the 3x3", far == d.cellCount);
+
+        World off;
+        off.init(16, 16, 8, 3u);
+        check("probing off the map is safe", off.probeAt(-50, -50) == 0);
     }
 
-    printf("\n=== advanceBots: timing gate ===\n");
+    printf("\n=== the pool is the single source of truth ===\n");
+    {
+        World w;
+        w.init(128, 128, 8, 42u);
+        int x = 0, y = 0, id = 0;
+        anyOreCell(w, x, y, id);
+        w.probeAt(x, y);
+        Deposit& d = *w.findDeposit(id);
+        const int total = d.total;
+
+        check("take shrinks the pool", w.takeFrom(x, y, 100) == 100 && d.remaining == total - 100);
+        check("overdrawing only gives what is left", [&]{
+            w.findDeposit(id)->remaining = 3;
+            return w.takeFrom(x, y, 50) == 3;
+        }());
+        check("emptying the vein exhausts it", d.exhausted == true && d.remaining == 0);
+        check("exhausted vein disappears from the whole map", oreCellCountOfId(w, id) == 0);
+        check("and it no longer draws", w.showsOre(x, y) == false);
+        check("mining an exhausted vein yields nothing", w.takeFrom(x, y, 5) == 0);
+        check("the id survives, so other cells still resolve", w.findDeposit(id) != nullptr);
+
+        World sum;
+        sum.init(128, 128, 8, 9u);
+        int tally = 0;
+        for(const Deposit& each : sum.deposits)
+            if(!each.exhausted)
+                tally += each.remaining;
+        check("remainingUnits equals the sum over veins", sum.remainingUnits() == tally);
+        check("remainingUnits is not a cell count any more", sum.remainingUnits() > oreCellCount(sum));
+    }
+
+    printf("\n=== hand mining and bots draw from the same pool ===\n");
+    {
+        World w;
+        w.init(128, 128, 8, 42u);
+        int x = 0, y = 0, id = 0;
+        anyOreCell(w, x, y, id);
+        w.probeAt(x, y);
+        Deposit& d = *w.findDeposit(id);
+
+        bool inRange = true;
+        for(int i = 0; i < 200; i++){
+            int got = w.playerTake(x, y);
+            if(got < PLAYER_TAKE_MIN || got > PLAYER_TAKE_MAX)
+                inRange = false;
+        }
+        check("playerTake always lands in [1,3] while the pool lasts", inRange);
+
+        d.remaining = 2;
+        check("a nearly empty vein caps the player's take", w.playerTake(x, y) <= 2);
+        check("and the pool never goes negative", d.remaining >= 0);
+
+        World botWorld;
+        botWorld.init(64, 8, 30, 11u);              //高覆盖率保证机器人那条行上有矿
+        int bx = 0, by = 0, bid = 0;
+        bool ore = false;
+        for(int row = 0; row < botWorld.height && !ore; row++)
+            for(int col = 0; col < botWorld.width && !ore; col++){
+                int found = botWorld.depositAt(col, row);
+                if(found != NO_DEPOSIT){ bx = col; by = row; bid = found; ore = true; }
+            }
+        check("found ore for the bot test", ore);
+        botWorld.probeAt(bx, by);
+        botWorld.syncBots(1);
+        //机器人是"先走一格、再判定脚下",所以要摆在目标格的前一格。
+        //目标恰好在最左列时,改成从右边接近,免得撞上左墙分支。
+        botWorld.bots[0].y = by;
+        if(bx > 0){
+            botWorld.bots[0].x = bx - 1;
+            botWorld.bots[0].dir = 1;
+        }
+        else{
+            botWorld.bots[0].x = bx + 1;
+            botWorld.bots[0].dir = -1;
+        }
+        botWorld.botDeadline = 0;
+        const int before = botWorld.findDeposit(bid)->remaining;
+        BotStep step = botWorld.advanceBots(1000, 1000);
+        check("a bot that steps onto ore reports it", step.moved && botWorld.bots[0].justAte == true);
+        check("the bot takes exactly BOT_TAKE from the pool",
+              before - botWorld.findDeposit(bid)->remaining == BOT_TAKE);
+        check("collected count matches", step.collected == 1);
+    }
+
+    printf("\n=== timing gate and walls still use runtime size ===\n");
     {
         World w;
         w.init(40, 8, 0, 1u);
         w.syncBots(1);
         w.botDeadline = 1000;
         BotStep early = w.advanceBots(999, 1000);
-        check("before deadline: no move", early.moved == false && early.collected == 0);
-        check("bot position unchanged", w.bots[0].x == 1);
+        check("before deadline: no move", early.moved == false && w.bots[0].x == 1);
         BotStep onTime = w.advanceBots(1000, 1000);
-        check("at deadline: moved", onTime.moved == true);
-        check("stepped exactly one cell", w.bots[0].x == 2);
-        check("next deadline rescheduled from now", w.botDeadline == 2000);
-    }
+        check("at deadline: one cell", onTime.moved && w.bots[0].x == 2);
+        check("next deadline rescheduled", w.botDeadline == 2000);
 
-    printf("\n=== advanceBots: eat only the cell it arrives at ===\n");
-    {
-        World w;
-        w.init(40, 8, 0, 1u);
-        w.syncBots(1);
-        w.botDeadline = 0;
-        setOre(w, 2, 0, true);      //bot 在 x=1,下一步会踩到这格
-        setOre(w, 9, 0, true);      //同一行更远处
-        check("remain seeded to 2", w.remainResource == 2);
-        BotStep s1 = w.advanceBots(1000, 1000);
-        check("arrived cell had resource -> collected 1", s1.collected == 1);
-        check("bot shows the bite frame", w.bots[0].justAte == true);
-        check("resource cleared at that cell", w.hasResource(2, 0) == false);
-        check("far resource untouched", w.hasResource(9, 0) == true);
-        BotStep s2 = w.advanceBots(2000, 1000);
-        check("arrived at empty cell -> collected 0", s2.collected == 0);
-        check("glyph falls back to open mouth", w.bots[0].justAte == false);
-        check("remain tracked the bot pickup", w.remainResource == 1);
-    }
-
-    printf("\n=== advanceBots: wall turnaround uses runtime width ===\n");
-    {
-        World w;
-        w.init(40, 8, 0, 1u);
-        w.syncBots(1);
-        w.botDeadline = 0;
         w.bots[0].x = w.width - 2;
-        BotStep hit = w.advanceBots(1000, 1000);
-        check("lands exactly on the last column", w.bots[0].x == w.width - 1);
-        check("flips to face left", w.bots[0].dir == -1 && hit.moved == true);
         w.advanceBots(2000, 1000);
-        check("moves back inward", w.bots[0].x == w.width - 2);
+        check("clamps at the right wall", w.bots[0].x == w.width - 1);
+        check("faces left", w.bots[0].dir == -1);
         w.bots[0].x = 1;
         w.bots[0].dir = -1;
         w.advanceBots(3000, 1000);
-        check("hits left wall and clamps at 0", w.bots[0].x == 0);
+        check("clamps at the left wall", w.bots[0].x == 0);
         check("faces right again", w.bots[0].dir == 1);
+
+        w.syncBots(w.height);
+        bool rows = true;
+        for(int row = 0; row < w.height; row++)
+            if(w.bots[row].y != row) rows = false;
+        check("one bot per row starting at y=0", w.bots.size() >= static_cast<size_t>(w.height) && rows);
     }
 
-    printf("\n=== refillIfSparse ===\n");
+    printf("\n=== same seed replays the same world ===\n");
     {
-        World w;
-        w.init(32, 8, 100, 1u);                    //填满,remain = 256 > 50
-        w.refillIfSparse();
-        check("above threshold: nothing refilled", w.remainResource == w.width * w.height);
+        World a, b, other;
+        a.init(128, 128, 8, 12345u);
+        b.init(128, 128, 8, 12345u);
+        other.init(128, 128, 8, 99999u);
+        check("same seed, same veins", a.cells == b.cells && a.deposits.size() == b.deposits.size());
+        check("same seed, same totals", [&]{
+            for(size_t i = 0; i < a.deposits.size(); i++)
+                if(a.deposits[i].total != b.deposits[i].total || a.deposits[i].cellCount != b.deposits[i].cellCount)
+                    return false;
+            return true;
+        }());
+        check("a different seed, a different map", a.cells != other.cells);
 
-        World sparse;
-        sparse.init(32, 8, 0, 1u);                 //全空,remain = 0
-        sparse.resourceRate = 100;
-        sparse.refillIfSparse();
-        check("at/below threshold with rate=100: whole map filled", sparse.remainResource == sparse.width * sparse.height);
-
-        World zero;
-        zero.init(32, 8, 0, 1u);
-        zero.refillIfSparse();
-        check("rate=0 scans the map but adds nothing", zero.remainResource == 0);
-
-        //阈值是绝对值 50,不随地图缩放:这是矿脉方案要替换掉的东西,先固化成事实。
-        World wide;
-        wide.init(512, 512, 0, 1u);
-        check("threshold 50 is 0.019% of a 512x512 map (why refills stop firing)", wide.remainResource <= 50);
-    }
-
-    printf("\n=== density still behaves statistically ===\n");
-    {
-        World w;
-        w.init(64, 64, 100, 1u);
-        check("rate=100 fills every cell", w.remainResource == 64 * 64);
-        w.resourceRate = 0;
-        w.relayout();
-        check("rate=0 empties every cell", w.remainResource == 0);
-        w.resourceRate = 30;
-        w.relayout();
-        double actual = w.remainResource * 100.0 / (w.width * w.height);
-        printf("  INFO  rate=30%% measured %.2f%% (fixed seed, so this number is stable)\n", actual);
-        check("rate=30% lands in a sane band", actual > 25.0 && actual < 35.0);
-        int counted = 0;
-        for(size_t i = 0; i < w.cells.size(); i++)
-            if(w.cells[i] != 0)
-                counted++;
-        check("remain equals the cells actually set", counted == w.remainResource);
+        a.regenerate();
+        check("regenerate replays from the seed", a.cells == b.cells);
+        a.coverage = 40;
+        a.regenerate();
+        check("raising coverage keeps old cells as a subset", [&]{
+            for(size_t i = 0; i < b.cells.size(); i++)
+                if(b.cells[i] != NO_DEPOSIT && a.cells[i] == NO_DEPOSIT)
+                    return false;                                   //同序列、门槛更宽 → 只多不少
+            return true;
+        }());
+        check("and really adds more ore", oreCellCount(a) > oreCellCount(b));
     }
 
     printf("\nfailed checks: %d\n", failures);

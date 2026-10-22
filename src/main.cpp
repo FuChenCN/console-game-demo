@@ -179,6 +179,7 @@ int main(int argc, char* argv[]){
     };
     int shopSelection = 0;                          //商店光标指向的商品下标
     string shopNotice = "Pick an item, Enter to buy";  //商店底部反馈行
+    string probeNotice;                                //最近一次探测的结果,显示在侧栏
     //机器人容器和迈步时刻都归 World 了;第一脚按初始档位排在开局一秒后。
     world.botDeadline = GetTickCount64() + BOT_SPEED_MS[0];
     //调试模式的开门短语。存大写,因为字母键的 wVirtualKeyCode 本身就是大写码,与 Shift 无关。
@@ -246,7 +247,9 @@ int main(int argc, char* argv[]){
         int oldX = x;
         int oldY = y;
         int oldResourceCount = resourceCount;
-        int oldRemainResource = world.remainResource;
+        int oldRemainResource = world.remainingUnits();   //剩余量现在是"池里还剩多少 #",不再是格子数
+        //探测结果和矿脉点亮状态的变化不在上面那几个数值里,单独用标志位上报。
+        bool oreChanged = false;
         //商店里光标位置和反馈文字的变化,不属于上面那几个数值比较,单独用标志位记。
         bool shopChanged = false;
         //机器人迈步也算状态变化,同样要上报给下面的 changed,否则画面不动。
@@ -285,14 +288,14 @@ int main(int argc, char* argv[]){
                     debugActed = true;
                 }
                 if(code == 'T'){
-                    //密度调完立刻重铺整张图,否则要等资源自己见底才看得出效果。
-                    world.resourceRate = min(100, world.resourceRate + 1);
-                    world.relayout();
+                    //覆盖率调完立刻重铺整张图,否则要等玩家自己跑半天才看得出效果。
+                    world.coverage = min(100, world.coverage + 1);
+                    world.regenerate();
                     debugActed = true;
                 }
                 if(code == 'Y'){
-                    world.resourceRate = max(0, world.resourceRate - 1);
-                    world.relayout();
+                    world.coverage = max(0, world.coverage - 1);
+                    world.regenerate();
                     debugActed = true;
                 }
             }
@@ -308,8 +311,13 @@ int main(int argc, char* argv[]){
                 if(code == 'S') y = min(world.height - 1, y + repeat);
                 if(code == 'A') x = max(0, x - repeat);
                 if(code == 'D') x = min(world.width - 1, x + repeat);
-                if((code == 'E' || code == VK_SPACE) && world.collectAt(x, y)){
-                    resourceCount++;   //扣地图资源、减剩余量都在 World 里做了,这里只记背包
+                if(code == 'E' || code == VK_SPACE)
+                    resourceCount += world.playerTake(x, y);   //从脚下那条脉的池里取,取不到就是 0
+                if(code == 'V'){
+                    //探测:揭示脚下 3x3 内第一次碰到的矿脉。
+                    int found = world.probeAt(x, y);
+                    probeNotice = found > 0 ? to_string(found) + " new vein" : "nothing here";
+                    oreChanged = true;
                 }
                 continue;
             }
@@ -360,7 +368,7 @@ int main(int argc, char* argv[]){
             //机器人吃掉的资源进背包:扣地图和减剩余量都在 World 里做完了,这里只加计数。
             resourceCount += step.collected;
             botActed = step.moved;
-            world.refillIfSparse();
+            //这里不再"见底就补一波":矿脉是不可再生的池子,采空就整条消失。
         }
         //标题页每 TITLE_STEPS_MS 推一次颜色相位;不在标题页就不推,免得白耗重绘。
         bool titleAnimated = false;
@@ -374,8 +382,8 @@ int main(int argc, char* argv[]){
         }
         //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
-                       resourceCount != oldResourceCount || world.remainResource != oldRemainResource ||
-                       shopChanged || botActed || debugActed || titleAnimated;
+                       resourceCount != oldResourceCount || world.remainingUnits() != oldRemainResource ||
+                       shopChanged || botActed || debugActed || titleAnimated || oreChanged;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
             needsPresent = true;
@@ -437,8 +445,9 @@ int main(int argc, char* argv[]){
                     for(int column = 0; column < viewW; column++){
                         int mapX = cameraX + column;
                         int mapY = cameraY + row;
+                        //未探明的矿脉画不出来,和空地一样——探测机制全靠这一句生效。
                         char value = mapX == x && mapY == y ? '@' :
-                                     (world.hasResource(mapX, mapY) ? '#' : ' ');
+                                     (world.showsOre(mapX, mapY) ? '#' : ' ');
                         setCell(column, row, value);
                     }
                 }
@@ -463,11 +472,20 @@ int main(int argc, char* argv[]){
                     writeText(column, 0, "PYS", infoWidth);
                     writeText(column, 2, position, infoWidth);
                     writeText(column, 3, "Collected:" + to_string(resourceCount), infoWidth);
-                    writeText(column, 4, "Remaining:" + to_string(world.remainResource), infoWidth);
+                    writeText(column, 4, "Remaining:" + to_string(world.remainingUnits()) + "#", infoWidth);
+                    //第 5 行:脚下这条脉的余量。站在未探明的地方显示 none——和"看不见就不能采"是同一件事。
+                    const Deposit* under = world.findDeposit(world.depositAt(x, y));
+                    writeText(column, 5,
+                              under != nullptr && under->discovered && !under->exhausted
+                                  ? "Vein:" + to_string(under->remaining) + "/" + to_string(under->total) + "#"
+                                  : "Vein:none",
+                              infoWidth);
                     writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
                     writeText(column, 10, "Right Shop  Q Quit", infoWidth);
+                    //探测提示和上一次的结果:没有反馈的按键会被当成坏了。
+                    writeText(column, 11, "V Probe  " + (probeNotice.empty() ? string("not yet") : probeNotice), infoWidth);
                     //正在运作的东西标在侧栏。只有 Auto Robot 会产生跑动单位,
                     //Bot Speedup 是全体提速,不单独占一行,而是体现在下面那个步长上。
                     //这几行排在第 12 行之后,终端高度刚好卡在最小值 12 时会画到画面外。
@@ -488,7 +506,7 @@ int main(int argc, char* argv[]){
                         listRow++;
                         writeText(column, listRow, "DEBUG ON", infoWidth);
                         listRow++;
-                        writeText(column, listRow, "# density:" + to_string(world.resourceRate) + "%", infoWidth);
+                        writeText(column, listRow, "# density:" + to_string(world.coverage) + "%", infoWidth);
                         listRow++;
                         //种子显示出来才谈得上复现:嫌图太密/太稀时,把这个数报过来就够,不用截图。
                         writeText(column, listRow, "seed:" + to_string(world.seed), infoWidth);
@@ -503,7 +521,7 @@ int main(int argc, char* argv[]){
                         setCell(column, viewH, '-');
                     writeText(0, viewH + 1, position, width);
                     writeText(0, viewH + 2, "Collected:" + to_string(resourceCount), width);
-                    writeText(0, viewH + 3, "Remaining:" + to_string(world.remainResource), width);
+                    writeText(0, viewH + 3, "Remaining:" + to_string(world.remainingUnits()) + "#", width);
                     writeText(0, viewH + 4, "WASD Move  E/Space Collect", width);
                     writeText(0, viewH + 5, "Right Shop  Q Quit", width);
                 }
