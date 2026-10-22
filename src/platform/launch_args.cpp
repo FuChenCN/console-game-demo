@@ -1,6 +1,8 @@
 #include "platform/launch_args.h"
 
+#include <exception>    //catch 的是 std::exception 基类,显式包含,不指望 stdexcept 顺带提供
 #include <stdexcept>
+#include <string>       //本文件直接用 std::string / std::stoul
 
 namespace {
 

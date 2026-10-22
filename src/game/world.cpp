@@ -1,5 +1,6 @@
 #include "game/world.h"
 
+#include <random>      //本文件直接用 uniform_int_distribution,不靠 world.h 间接提供
 #include <stdexcept>
 
 namespace {
