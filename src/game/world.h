@@ -40,6 +40,7 @@ struct World{
     unsigned long long botDeadline = 0;          //下次允许迈步的时刻
 
     //按指定规模分配网格并按当前密度铺图。开局、以及以后"选完世界规模"都走这里。
+    //宽高必须为正数;否则抛出 std::invalid_argument,原世界状态保持不变。
     void init(int w, int h, int rate);
 
     //按当前密度重铺整张图,不重新分配尺寸(调试改密度时用)。

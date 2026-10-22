@@ -1,5 +1,7 @@
 #include "game/world.h"
 
+#include <stdexcept>
+
 //注意: 这里仍使用全局 rand()/srand(),随机源注入是后续步骤的事。
 
 namespace {
@@ -10,6 +12,8 @@ inline size_t cellIndex(int x, int y, int width){
 }
 
 void World::init(int w, int h, int rate){
+    if(w <= 0 || h <= 0)
+        throw std::invalid_argument("world dimensions must be positive");
     width = w;
     height = h;
     resourceRate = rate;
