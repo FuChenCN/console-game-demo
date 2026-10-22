@@ -1,7 +1,9 @@
 //针对真实 World 实现的行为测试:直接链接 src/game/world.cpp,不开终端、不画屏幕。
 #include "game/world.h"
 
+#include <cstddef>     //size_t
 #include <cstdio>
+#include <stdexcept>   //catch 用 std::invalid_argument,必须自己包含
 #include <string>
 
 static int failures = 0;
