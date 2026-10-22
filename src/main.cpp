@@ -12,13 +12,31 @@
 #include <vector>
 
 #include "platform/console_ctrl.h"   //退出标志与 Ctrl+C/Ctrl+Break 回调
+#include "platform/launch_args.h"    //命令行与环境变量里的地图尺寸、种子
 #include "game/types.h"              //商品条目与机器人
 #include "game/world.h"              //资源网格、密度与机器人的推进规则
 #include "content/title_assets.h"    //标题页的字模、色板与节奏
 
 using namespace std;
 
-int main(){
+int main(int argc, char* argv[]){
+    //帮助文字和参数提示都在取控制台句柄之前输出:它们不需要交互控制台,而且这几种情况本就该立刻退出。
+    //文案用英文——宿主终端常是 GBK/936,中文提示有可能显示成乱码,而报错看不清比不报错更糟。
+    const char* envSeed = getenv("PYS_SEED");
+    LaunchOptions options = parseLaunchArgs(argc,
+                                            const_cast<const char* const*>(argv),
+                                            envSeed ? envSeed : "",
+                                            static_cast<uint32_t>(time(nullptr)));
+    if(options.showHelp){
+        fputs("PYS - console automation game demo\n", stderr);
+        fputs("usage: PYS [--seed N] [--size WIDTHxHEIGHT] [--help]\n", stderr);
+        fputs("  --seed N    fixed map seed; PYS_SEED also works\n", stderr);
+        fprintf(stderr, "  --size WxH  map size, default %dx%d\n", DEFAULT_MAP_W, DEFAULT_MAP_H);
+        return 0;
+    }
+    if(!options.notice.empty())
+        fputs(("PYS: " + options.notice + "\n").c_str(), stderr);
+
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO consoleInfo;
@@ -49,10 +67,18 @@ int main(){
     //世界状态已收进 game/world.h:网格、密度、剩余量、机器人。
     World world;
     //种子用于重建初始分布并显示在调试面板;存档还要记录运行期变化和随机引擎状态。
-    //随机源不再走全局 rand()/srand()。
-    uint32_t worldSeed = static_cast<uint32_t>(time(nullptr));
-    //尺寸同样是运行期参数:默认 512x512,以后"世界规模选择"界面把玩家选的宽高传进这里。
-    world.init(DEFAULT_MAP_W, DEFAULT_MAP_H, 6, worldSeed);
+    //没写 --seed / PYS_SEED 时,种子是启动那一刻的时钟值。
+    int wantW = options.sizeGiven ? options.mapW : DEFAULT_MAP_W;
+    int wantH = options.sizeGiven ? options.mapH : DEFAULT_MAP_H;
+    try{
+        world.init(wantW, wantH, 6, options.seed);
+    }
+    catch(const std::invalid_argument&){
+        //World 的契约是宽高必须为正(0 或负数抛异常)。这里兜住是为了让"尺寸填错"退化成
+        //回默认规模继续玩,而不是让控制台程序闪退——闪退连报错都来不及看清。
+        world.init(DEFAULT_MAP_W, DEFAULT_MAP_H, 6, options.seed);
+        fputs("PYS: rejected map size, falling back to the default.\n", stderr);
+    }
 
     //画面坐标相对可见窗口,不修改终端尺寸或窗口样式。
     SMALL_RECT viewport = {-1, -1, -1, -1};
