@@ -164,9 +164,9 @@ int main(){
         FOREGROUND_RED,                                             //石:褐
         FOREGROUND_INTENSITY,                                       //煤:保持深灰,再暗就看不见了
     };
-    //每个矿格在屏幕上占 4 列:SiO2 要 4 个字符,其余符号右补空格。
-    const string ORE_LABELS[ORE_KIND_COUNT] = {"Fe", "Cu", "Sn", "SiO2", "C"};
-    const int CELL_COLS = 4;
+    //每个矿格在屏幕上占 2 列;石头显示 ST,煤显示 C,短符号右补空格。
+    const string ORE_LABELS[ORE_KIND_COUNT] = {"Fe", "Cu", "Sn", "ST", "C"};
+    const int CELL_COLS = 2;
     const BYTE PLAYER_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
     const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
     //背包按矿种分开计数;制作扣对应矿种。
@@ -520,12 +520,8 @@ int main(){
                     int infoWidth = width - column;
                     writeText(column, 0, "PYS", infoWidth);
                     writeText(column, 2, position, infoWidth);
-                    writeText(column, 3,
-                              "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper) +
-                              " Sn:" + to_string(invTin), infoWidth);
-                    writeText(column, 4,
-                              "C:" + to_string(invCoal) + " SiO2:" + to_string(invStone), infoWidth);
-                    writeText(column, 5, "Remaining:" + to_string(world.remainResource), infoWidth);
+                    //库存只放在背包页,信息面板只留地图状态和运行状态。
+                    writeText(column, 3, "Remaining:" + to_string(world.remainResource), infoWidth);
                     writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
@@ -576,7 +572,7 @@ int main(){
                                   "Fe" + to_string(kindCount[0]) +
                                   " Cu" + to_string(kindCount[1]) +
                                   " Sn" + to_string(kindCount[2]) +
-                                  " Si" + to_string(kindCount[3]) +
+                                  " ST" + to_string(kindCount[3]) +
                                   " C" + to_string(kindCount[4]), infoWidth);
                         listRow++;
                         writeText(column, listRow, "regrow:+1#/5min  cell:100#", infoWidth);
@@ -590,15 +586,13 @@ int main(){
                     for(int column = 0; column < width; column++)
                         setCell(column, viewH, '-');
                     writeText(0, viewH + 1, position, width);
-                    writeText(0, viewH + 2,
-                              "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper) +
-                              " Sn:" + to_string(invTin), width);
+                    writeText(0, viewH + 2, "Remaining:" + to_string(world.remainResource), width);
                     writeText(0, viewH + 3,
-                              "C:" + to_string(invCoal) + " SiO2:" + to_string(invStone) +
-                              " Rem:" + to_string(world.remainResource), width);
-                    writeText(0, viewH + 4,
                               playNotice.empty() ? string("WASD Move  E/Space Collect") : playNotice,
                               width);
+                    writeText(0, viewH + 4,
+                              "Rigs:" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned) +
+                              " Lv" + to_string(speedLevel), width);
                     writeText(0, viewH + 5, "Right Bag  Enter Rig  Q Quit", width);
                 }
             }
@@ -618,7 +612,7 @@ int main(){
                     writeText(0, 2, "Iron   :" + to_string(invIron), bagWidth);
                     writeText(0, 3, "Copper :" + to_string(invCopper), bagWidth);
                     writeText(0, 4, "Tin    :" + to_string(invTin), bagWidth);
-                    writeText(0, 5, "SiO2   :" + to_string(invStone), bagWidth);
+                    writeText(0, 5, "Stone  :" + to_string(invStone), bagWidth);
                     writeText(0, 6, "Coal   :" + to_string(invCoal), bagWidth);
                     writeText(0, 7, "Total  :" + to_string(invTotal), bagWidth);
                     writeText(0, 8, "Rigs   :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), bagWidth);
@@ -631,7 +625,7 @@ int main(){
                     writeText(0, 0, "========== BAG ==========", width);
                     writeText(0, 1, "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper), width);
                     writeText(0, 2, "Sn:" + to_string(invTin) + " C:" + to_string(invCoal), width);
-                    writeText(0, 3, "SiO2:" + to_string(invStone), width);
+                    writeText(0, 3, "Stone:" + to_string(invStone), width);
                     writeText(0, 4, "Total:" + to_string(invTotal), width);
                     writeText(0, 5, "Rigs :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), width);
                     writeText(0, 6, "Speed:Lv" + to_string(speedLevel) + " " + speedText, width);

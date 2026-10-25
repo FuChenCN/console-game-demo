@@ -24,7 +24,7 @@ enum class OreKind : uint8_t{
     Iron = 0,     //灰
     Copper = 1,   //橙
     Tin = 2,      //青灰
-    Stone = 3,    //土黄,SiO2
+    Stone = 3,    //土黄,显示 ST
     Coal = 4,     //煤,C
 };
 

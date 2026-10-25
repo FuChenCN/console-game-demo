@@ -335,7 +335,7 @@ int main(){
             if(counts[i] > largest) largest = counts[i];
         }
         check("the five kinds are split evenly", largest - smallest <= 1);
-        printf("  INFO  default 512x512: Fe=%d Cu=%d Sn=%d SiO2=%d C=%d (%zu pools)\n",
+        printf("  INFO  default 512x512: Fe=%d Cu=%d Sn=%d ST=%d C=%d (%zu pools)\n",
                counts[0], counts[1], counts[2], counts[3], counts[4], w.pools.size());
 
         //重铺不改类型:id 不变,类型也不变。
