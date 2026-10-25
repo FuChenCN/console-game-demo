@@ -12,11 +12,20 @@
 #include <vector>
 
 #include "platform/console_ctrl.h"   //退出标志与 Ctrl+C/Ctrl+Break 回调
-#include "game/types.h"              //商品条目与机器人
 #include "game/world.h"              //资源网格、密度与机器人的推进规则
 #include "content/title_assets.h"    //标题页的字模、色板与节奏
 
 using namespace std;
+
+//制作配方:成本按矿种分开;cap=0 表示不限量,owned 指向背包里的成品计数。
+struct Recipe{
+    const char* name;
+    int costIron;
+    int costCopper;
+    int costTin;
+    int cap;
+    int* owned;
+};
 
 int main(){
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -132,28 +141,51 @@ int main(){
     //玩家出生在世界中心。原先写死的 10,10 是按 128x32 那张图定的,放到 512x512 就成了贴左上角。
     int x = world.width / 2;
     int y = world.height / 2;
-    int resourceCount = 0;
-    //场景:0 采集,1 商店,2 标题。开局停在标题,按 Enter 才进采集页。
+    //场景:0 采集,1 背包+制作,2 标题。开局停在标题,按 Enter 才进采集页。
     int scene = 2;
     int titlePhase = 0;                                        //当前颜色相位
     unsigned long long titleDeadline = GetTickCount64();       //下次推相位的时刻
-    const int SHOP_ROBOT = 0;      //商品表里只有这一行会生成跑动单位
-    const int SHOP_SPEEDUP = 1;    //这一行不改数量上限,而是给全体机器人提速
-    const int SPEED_MAX = 4;       //Bot Speedup 最高买到第 4 档
+    const int SPEED_MAX = 4;       //Rig Speedup 最高做到第 4 档
     //五档步长(毫秒),下标就是已购档数:第 0 档是初始的 1.0s 一格,买到第 4 档变 0.1s。
-    const int BOT_SPEED_MS[SPEED_MAX + 1] = {1000, 750, 500, 250, 100};
-    //商品表驱动商店的画面和购买:加新商品只需在这里多填一行,选择、渲染、扣费、上限都跟着走。
-    //后面两项是留出来的空位(available=false),给后续 commit 填实际商品。
-    vector<ShopItem> shopItems = {
-        {"Auto Robot", 100, 0, true, world.height},   //一行只能站一个,上限就是地图行数(改成放置式矿机后替换掉)
-        {"Bot Speedup", 1000, 0, true, SPEED_MAX},//五档升级,买满第 4 档到顶
-        {"", 0, 0, false, 0},
-        {"", 0, 0, false, 0},
+    const int RIG_SPEED_MS[SPEED_MAX + 1] = {1000, 750, 500, 250, 100};
+    //三类矿脉各有一套颜色:满格用亮色,挖过但没挖空的格子换成同色系的暗色。
+    //控制台只有 16 色,铜的"橙"用亮黄近似,锡的"青灰"用亮青近似。
+    const BYTE ORE_COLORS[ORE_KIND_COUNT] = {
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,        //铁:浅灰
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY,   //铜:橙
+        FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,  //锡:青灰
+        FOREGROUND_RED | FOREGROUND_GREEN,                          //石:土黄
+        FOREGROUND_INTENSITY,                                       //煤:深灰
     };
-    int shopSelection = 0;                          //商店光标指向的商品下标
-    string shopNotice = "Pick an item, Enter to buy";  //商店底部反馈行
-    //机器人容器和迈步时刻都归 World 了;第一脚按初始档位排在开局一秒后。
-    world.botDeadline = GetTickCount64() + BOT_SPEED_MS[0];
+    const BYTE ORE_COLORS_DIM[ORE_KIND_COUNT] = {
+        FOREGROUND_INTENSITY,                                       //铁:深灰
+        FOREGROUND_RED | FOREGROUND_GREEN,                          //铜:暗黄
+        FOREGROUND_GREEN | FOREGROUND_BLUE,                         //锡:暗青
+        FOREGROUND_RED,                                             //石:褐
+        FOREGROUND_INTENSITY,                                       //煤:保持深灰,再暗就看不见了
+    };
+    //每个矿格在屏幕上占 2 列;石头显示 ST,煤显示 C,短符号右补空格。
+    const string ORE_LABELS[ORE_KIND_COUNT] = {"Fe", "Cu", "Sn", "ST", "C"};
+    const int CELL_COLS = 2;
+    const BYTE PLAYER_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    //背包按矿种分开计数;制作扣对应矿种。
+    int invIron = 0;
+    int invCopper = 0;
+    int invTin = 0;
+    int invStone = 0;
+    int invCoal = 0;
+    int rigsOwned = 0;          //已制作总数,包含已经放出去的
+    int speedLevel = 0;         //0..SPEED_MAX
+    //制作表驱动右栏:加一个配方只需多填一行,成本、上限、数量都跟着走。
+    vector<Recipe> recipes = {
+        {"Mining Rig", 60, 30, 10, 0, &rigsOwned},          //不限量,做多少都能备着
+        {"Rig Speedup", 200, 100, 100, SPEED_MAX, &speedLevel},
+    };
+    int recipeSelection = 0;                        //制作面板光标
+    string craftNotice = "Up/Down select, Enter craft";
+    string playNotice;                              //采集场景的放置反馈(2.5 秒后自动消失)
+    unsigned long long playNoticeUntil = 0;
     //调试模式的开门短语。存大写,因为字母键的 wVirtualKeyCode 本身就是大写码,与 Shift 无关。
     const string DEBUG_PHRASE = "OWOISHERE";
     string debugBuffer;             //最近按下的几个字母,只留够匹配短语的长度
@@ -218,25 +250,24 @@ int main(){
         int oldScene = scene;
         int oldX = x;
         int oldY = y;
-        int oldResourceCount = resourceCount;
         int oldRemainResource = world.remainResource;
-        //商店里光标位置和反馈文字的变化,不属于上面那几个数值比较,单独用标志位记。
-        bool shopChanged = false;
-        //机器人迈步也算状态变化,同样要上报给下面的 changed,否则画面不动。
-        bool botActed = false;
+        //矿机取矿、矿池回填也算状态变化,同样要上报给下面的 changed,否则画面不动。
+        bool poolActed = false;
+        //放置矿机、提示文字出现/消失同样自己上报。
+        bool uiActed = false;
         //调试操作(开启、发钱、改密度)同样要自己上报,不然侧栏不会刷新。
         bool debugActed = false;
         for(const auto& key : keys){
             int code = key.wVirtualKeyCode;
             int repeat = max<int>(1, key.wRepeatCount);
-            //标题页不响应左右切换,否则一进标题就被方向键带去商店场景。
+            //标题页不响应左右切换,否则一进标题就被方向键带去背包场景。
             if(scene != 2){
                 if(code == VK_RIGHT) scene = 1;
                 if(code == VK_LEFT) scene = 0;
             }
             if(!canPlay)
                 continue;
-            //调试短语逐键累积,采集和商店场景都能敲。只保留最后 9 个字母,
+            //调试短语逐键累积,采集和背包场景都能敲。只保留最后 9 个字母,
             //所以中间打错不用整串重来,接着往下敲就行。
             if(code >= 'A' && code <= 'Z'){
                 debugBuffer += static_cast<char>(code);
@@ -253,8 +284,12 @@ int main(){
             //所以它们会先进缓冲、再被当成命令执行,两者不冲突。
             if(debugOn){
                 if(code == 'F'){
-                    //直接记账,不动 Remaining:发钱不该改变地图上 # 的数量。
-                    resourceCount += 10000;
+                    //调试补给:五类矿各加 10000,不动 Remaining(地图上的矿格不变)。
+                    invIron += 10000;
+                    invCopper += 10000;
+                    invTin += 10000;
+                    invStone += 10000;
+                    invCoal += 10000;
                     debugActed = true;
                 }
                 if(code == 'T'){
@@ -276,64 +311,95 @@ int main(){
                 continue;
             }
             if(scene == 0){
-                //采集场景:WASD 移动,E 或空格采掉脚下的资源。
+                //采集场景:WASD 移动,E 或空格采掉脚下的资源,Enter 放一台矿机。
                 if(code == 'W') y = max(0, y - repeat);
                 if(code == 'S') y = min(world.height - 1, y + repeat);
                 if(code == 'A') x = max(0, x - repeat);
                 if(code == 'D') x = min(world.width - 1, x + repeat);
-                if((code == 'E' || code == VK_SPACE) && world.collectAt(x, y)){
-                    resourceCount++;   //扣地图资源、减剩余量都在 World 里做了,这里只记背包
+                if(code == 'E' || code == VK_SPACE){
+                    OreKind kind;
+                    if(world.oreKindAt(x, y, kind) && world.collectAt(x, y)){
+                        //按矿种入包:铁/铜/锡分开记。
+                        switch(kind){
+                        case OreKind::Iron: invIron++; break;
+                        case OreKind::Copper: invCopper++; break;
+                        case OreKind::Tin: invTin++; break;
+                        case OreKind::Stone: invStone++; break;
+                        case OreKind::Coal: invCoal++; break;
+                        }
+                    }
+                }
+                if(code == VK_RETURN){
+                    const unsigned long long now = GetTickCount64();
+                    const int owned = rigsOwned;
+                    const int placed = static_cast<int>(world.rigs.size());
+                    const int stepMs = RIG_SPEED_MS[speedLevel];
+                    if(placed >= owned){
+                        playNotice = "No rig: craft one in the bag";
+                    }
+                    else if(world.placeRig(x, y, now, stepMs)){
+                        //放置不结算资源:矿机占住这一格,落地后自己从脚下开始挖。
+                        playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
+                    }
+                    else{
+                        playNotice = "Stand on # to place a rig";
+                    }
+                    playNoticeUntil = now + 2500;
+                    uiActed = true;
                 }
                 continue;
             }
-            //商店场景:光标在商品表上移动,Enter 买下光标指向的那一项。
-            //W/S 和上下方向键都能移动光标,取模实现到顶后绕回。
-            int itemCount = static_cast<int>(shopItems.size());
+            //背包场景:右栏是制作面板。W/S(或上下)选配方,Enter 制作。
+            const int recipeCount = static_cast<int>(recipes.size());
             if(code == 'W' || code == VK_UP){
-                shopSelection = (shopSelection + itemCount - 1) % itemCount;
-                shopChanged = true;
+                recipeSelection = (recipeSelection + recipeCount - 1) % recipeCount;
+                uiActed = true;
             }
             if(code == 'S' || code == VK_DOWN){
-                shopSelection = (shopSelection + 1) % itemCount;
-                shopChanged = true;
+                recipeSelection = (recipeSelection + 1) % recipeCount;
+                uiActed = true;
             }
             if(code == VK_RETURN){
-                ShopItem& item = shopItems[shopSelection];
-                if(!item.available){
-                    //空位不可购买,给出提示而不是静默无反应。
-                    shopNotice = "Empty slot: nothing to buy";
+                Recipe& recipe = recipes[recipeSelection];
+                if(recipe.cap > 0 && *recipe.owned >= recipe.cap){
+                    craftNotice = string(recipe.name) + " is maxed out";
                 }
-                else if(item.cap > 0 && item.owned >= item.cap){
-                    //到顶就不再扣钱:机器人占满 32 行、升级买满第 4 档都走这里挡掉。
-                    shopNotice = string(item.name) + " is maxed out";
-                }
-                else if(resourceCount < item.price){
-                    shopNotice = "Not enough #: need " + to_string(item.price);
+                else if(invIron < recipe.costIron || invCopper < recipe.costCopper ||
+                        invTin < recipe.costTin){
+                    craftNotice = "Not enough ore";
                 }
                 else{
-                    //扣款和加库存必须一起成功,所以前面三种情况都在上面被拦掉了。
-                    int paid = item.price;   //先记下成交价,Bot Speedup 会把挂牌价改掉
-                    resourceCount -= paid;
-                    item.owned++;
-                    //递档升级:买完一档把挂牌价翻倍,对应 1000 / 2000 / 4000 / 8000。
-                    if(shopSelection == SHOP_SPEEDUP && item.owned < SPEED_MAX)
-                        item.price *= 2;
-                    shopNotice = string("Bought ") + item.name + " for " + to_string(paid) + "#";
+                    invIron -= recipe.costIron;
+                    invCopper -= recipe.costCopper;
+                    invTin -= recipe.costTin;
+                    (*recipe.owned)++;
+                    //递档升级:每做一档把三样成本都翻倍,直到买满。
+                    if(recipe.owned == &speedLevel && *recipe.owned < SPEED_MAX){
+                        recipe.costIron *= 2;
+                        recipe.costCopper *= 2;
+                        recipe.costTin *= 2;
+                    }
+                    craftNotice = string("Crafted ") + recipe.name;
                 }
-                shopChanged = true;
+                uiActed = true;
             }
         }
-        //机器人只在采集场景跑;切到商店时冻住,不会在看不见的地方偷偷吃资源。
-        //原来这里是两个同条件的 if,中间没有别的语句,合并成一个不改变语义。
+        //矿池和矿机只在采集场景运转;切到背包时冻住,不会在看不见的地方偷偷产出。
         if(canPlay && scene == 0){
-            world.syncBots(shopItems[SHOP_ROBOT].owned);
-            //步长取当前升级档位,买到 Bot Speedup 后下一脚就按新间隔走。
-            BotStep step = world.advanceBots(GetTickCount64(),
-                                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned]);
-            //机器人吃掉的资源进背包:扣地图和减剩余量都在 World 里做完了,这里只加计数。
-            resourceCount += step.collected;
-            botActed = step.moved;
-            world.refillIfSparse();
+            const unsigned long long now = GetTickCount64();
+            //先按 5 分钟节奏给未满的池补一格,再让到点的矿机出手。
+            const int grown = world.updatePools(now);
+            const OreYield mined = world.advanceRigs(now, RIG_SPEED_MS[speedLevel]);
+            invIron += mined.iron;
+            invCopper += mined.copper;
+            invTin += mined.tin;
+            invStone += mined.stone;
+            invCoal += mined.coal;
+            poolActed = (grown > 0) || (mined.total() > 0);
+            if(!playNotice.empty() && now >= playNoticeUntil){
+                playNotice.clear();
+                uiActed = true;
+            }
         }
         //标题页每 TITLE_STEPS_MS 推一次颜色相位;不在标题页就不推,免得白耗重绘。
         bool titleAnimated = false;
@@ -345,10 +411,10 @@ int main(){
                 titleAnimated = true;
             }
         }
-        //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
+        //制作、选配方、放置和提示变化都通过 uiActed 上报;采集与回填靠 remainResource 比较。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
-                       resourceCount != oldResourceCount || world.remainResource != oldRemainResource ||
-                       shopChanged || botActed || debugActed || titleAnimated;
+                       world.remainResource != oldRemainResource ||
+                       poolActed || uiActed || debugActed || titleAnimated;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
             needsPresent = true;
@@ -401,60 +467,89 @@ int main(){
             else if(scene == 0){
                 bool sidebar = width >= 80;
                 //注意两套尺寸:width / height 是终端窗口大小,world.width / world.height 是地图大小。
-                //地图可以远大于窗口,所以视口要 clamp 在地图范围内跟随玩家滚动。
-                int viewW = min(world.width, width - (sidebar ? 31 : 0));
+                //每个地图格占 2 个屏幕列(Fe/Cu/Sn 两个字),所以横向能看到的格子数只有列数的一半。
+                int available = width - (sidebar ? 31 : 0);
+                int viewW = min(world.width, available / CELL_COLS);
                 int viewH = min(world.height, height - (sidebar ? 0 : 6));
                 int cameraX = clamp(x - viewW / 2, 0, world.width - viewW);
                 int cameraY = clamp(y - viewH / 2, 0, world.height - viewH);
+                //一个 token 固定占 CELL_COLS 列,短符号右补空格。
+                auto writeToken = [&](int column, int row, const string& text, int attr){
+                    for(int i = 0; i < CELL_COLS; i++)
+                        setCell(column + i, row,
+                                i < static_cast<int>(text.size()) ? text[i] : ' ', attr);
+                };
                 for(int row = 0; row < viewH; row++){
-                    for(int column = 0; column < viewW; column++){
-                        int mapX = cameraX + column;
-                        int mapY = cameraY + row;
-                        char value = mapX == x && mapY == y ? '@' :
-                                     (world.hasResource(mapX, mapY) ? '#' : ' ');
-                        setCell(column, row, value);
+                    for(int cell = 0; cell < viewW; cell++){
+                        const int screenX = cell * CELL_COLS;
+                        const int mapX = cameraX + cell;
+                        const int mapY = cameraY + row;
+                        if(mapX == x && mapY == y){
+                            writeToken(screenX, row, "@", PLAYER_ATTR);
+                            continue;
+                        }
+                        const uint16_t poolId = world.poolAt(mapX, mapY);
+                        if(poolId == 0)
+                            continue;   //空格的空白由整帧 fill 负责,不必逐格写
+                        //颜色跟着矿脉类型走:铁灰、铜橙、锡青灰、石土黄、煤深灰。
+                        //挖过但没挖空的格子换成同色系的暗色,一眼能看出这格被啃过。
+                        const int kind = static_cast<int>(world.pools[poolId - 1].kind);
+                        const BYTE color = world.oreLeftAt(mapX, mapY) == ORE_PER_CELL
+                                               ? ORE_COLORS[kind]
+                                               : ORE_COLORS_DIM[kind];
+                        writeToken(screenX, row, ORE_LABELS[kind], color);
                     }
                 }
-                //机器人盖在资源之上、玩家之下:它踩到的 # 被符号顶掉,但玩家 @ 优先,重叠时不画机器人。
-                for(const Bot& bot : world.bots){
-                    if(bot.x == x && bot.y == y)
+                //矿机盖在矿格之上、玩家之下:玩家 @ 优先,重叠时不画矿机。
+                for(const Rig& rig : world.rigs){
+                    if(rig.x == x && rig.y == y)
                         continue;
-                    int screenX = bot.x - cameraX;
-                    int screenY = bot.y - cameraY;
-                    //地图比可见区域大,跑出视口的机器人不画。
-                    if(screenX < 0 || screenX >= viewW || screenY < 0 || screenY >= viewH)
+                    //跑出视口的矿机不画。
+                    if(rig.x < cameraX || rig.x >= cameraX + viewW ||
+                       rig.y < cameraY || rig.y >= cameraY + viewH)
                         continue;
-                    //吃到就是咬合的 =,没吃到按方向显示张口的 < 或 >。
-                    setCell(screenX, screenY, bot.justAte ? '=' : (bot.dir > 0 ? '<' : '>'));
+                    const int screenX = (rig.x - cameraX) * CELL_COLS;
+                    const int screenY = rig.y - cameraY;
+                    writeToken(screenX, screenY, "&", RIG_ATTR);
                 }
                 string position = "X:" + to_string(x) + " Y:" + to_string(y);
                 if(sidebar){
                     for(int row = 0; row < height; row++)
-                        setCell(viewW, row, '|');
-                    int column = viewW + 1;
+                        setCell(viewW * CELL_COLS, row, '|');
+                    int column = viewW * CELL_COLS + 1;
                     int infoWidth = width - column;
                     writeText(column, 0, "PYS", infoWidth);
                     writeText(column, 2, position, infoWidth);
-                    writeText(column, 3, "Collected:" + to_string(resourceCount), infoWidth);
-                    writeText(column, 4, "Remaining:" + to_string(world.remainResource), infoWidth);
+                    //库存只放在背包页,信息面板只留地图状态和运行状态。
+                    writeText(column, 3, "Remaining:" + to_string(world.remainResource), infoWidth);
                     writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
-                    writeText(column, 10, "Right Shop  Q Quit", infoWidth);
-                    //正在运作的东西标在侧栏。只有 Auto Robot 会产生跑动单位,
-                    //Bot Speedup 是全体提速,不单独占一行,而是体现在下面那个步长上。
+                    writeText(column, 10, "Right Bag  Enter Rig  Q Quit", infoWidth);
+                    //第 11 行留给放置反馈和备用矿机数量,不占用下面的 Running 段。
+                    if(!playNotice.empty())
+                        writeText(column, 11, playNotice, infoWidth);
+                    else
+                        writeText(column, 11,
+                                  "Rigs spare:" + to_string(rigsOwned -
+                                                            static_cast<int>(world.rigs.size())),
+                                  infoWidth);
+                    //正在运作的东西标在侧栏:矿机数量、当前速度档。
+                    //Rig Speedup 不给矿机单独占行,而是体现在下面那个步长上。
                     //这几行排在第 12 行之后,终端高度刚好卡在最小值 12 时会画到画面外。
                     int listRow = 12;
                     writeText(column, listRow, "Running:", infoWidth);
                     listRow++;
-                    writeText(column, listRow, "Bots:" + to_string(world.bots.size()) + "/" + to_string(world.height), infoWidth);
+                    writeText(column, listRow,
+                              "Rigs:" + to_string(world.rigs.size()) + "/" +
+                              to_string(rigsOwned), infoWidth);
                     listRow++;
                     //步长按已购档位取,格式化成两位小数:1000ms 显示 1.00s,100ms 显示 0.10s。
                     char speedText[16];
                     snprintf(speedText, sizeof(speedText), "%.2fs",
-                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned] / 1000.0);
+                             RIG_SPEED_MS[speedLevel] / 1000.0);
                     writeText(column, listRow,
-                              string("Speed:Lv") + to_string(shopItems[SHOP_SPEEDUP].owned) + " " +
+                              string("Speed:Lv") + to_string(speedLevel) + " " +
                               speedText + "/step", infoWidth);
                     //调试状态标在侧栏,可用键也一并写出来,免得回头翻代码。
                     if(debugOn){
@@ -466,7 +561,23 @@ int main(){
                         //种子显示出来才谈得上复现:嫌图太密/太稀时,把这个数报过来就够,不用截图。
                         writeText(column, listRow, "seed:" + to_string(world.seed), infoWidth);
                         listRow++;
-                        writeText(column, listRow, "F +10000#  T up  Y down", infoWidth);
+                        int kindCount[ORE_KIND_COUNT] = {};
+                        for(const OrePool& pool : world.pools)
+                            kindCount[static_cast<int>(pool.kind)]++;
+                        writeText(column, listRow,
+                                  "pools:" + to_string(world.pools.size()) +
+                                  "  rigs:" + to_string(world.rigs.size()), infoWidth);
+                        listRow++;
+                        writeText(column, listRow,
+                                  "Fe" + to_string(kindCount[0]) +
+                                  " Cu" + to_string(kindCount[1]) +
+                                  " Sn" + to_string(kindCount[2]) +
+                                  " ST" + to_string(kindCount[3]) +
+                                  " C" + to_string(kindCount[4]), infoWidth);
+                        listRow++;
+                        writeText(column, listRow, "regrow:+1#/5min  cell:100#", infoWidth);
+                        listRow++;
+                        writeText(column, listRow, "F +10k each  T up  Y down", infoWidth);
                         listRow++;
                         writeText(column, listRow, "owoishere again: off", infoWidth);
                     }
@@ -475,44 +586,88 @@ int main(){
                     for(int column = 0; column < width; column++)
                         setCell(column, viewH, '-');
                     writeText(0, viewH + 1, position, width);
-                    writeText(0, viewH + 2, "Collected:" + to_string(resourceCount), width);
-                    writeText(0, viewH + 3, "Remaining:" + to_string(world.remainResource), width);
-                    writeText(0, viewH + 4, "WASD Move  E/Space Collect", width);
-                    writeText(0, viewH + 5, "Right Shop  Q Quit", width);
+                    writeText(0, viewH + 2, "Remaining:" + to_string(world.remainResource), width);
+                    writeText(0, viewH + 3,
+                              playNotice.empty() ? string("WASD Move  E/Space Collect") : playNotice,
+                              width);
+                    writeText(0, viewH + 4,
+                              "Rigs:" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned) +
+                              " Lv" + to_string(speedLevel), width);
+                    writeText(0, viewH + 5, "Right Bag  Enter Rig  Q Quit", width);
                 }
             }
             else{
-                //商店画面完全由 shopItems 驱动:商品表加减行,这里跟着变,不需要改代码。
-                int shopWidth = min(48, width - 2);
-                int itemCount = static_cast<int>(shopItems.size());
-                int panelHeight = itemCount + 8;   //标题 + 列表 + 余额 + 反馈 + 两行提示占的总行数
-                int column = (width - shopWidth) / 2;
-                int row = max(0, (height - panelHeight) / 2);
-                writeText(column, row, "============ SHOP ============", shopWidth);
-                //光标所在行以 > 开头;实装商品显示 价格 和 已有数量,空位显示占位文字。
-                for(int index = 0; index < itemCount; index++){
-                    const ShopItem& item = shopItems[index];
-                    string line = (index == shopSelection ? "> " : "  ") + to_string(index + 1) + ". ";
-                    if(item.available){
-                        //买满的货把价格换成 MAX:留着挂牌价会让人以为还能再买一次。
-                        //其余情况 # 是资源计价单位,数量写成 已购/上限。
-                        line += string(item.name) + "  ";
-                        if(item.cap > 0 && item.owned >= item.cap)
-                            line += "MAX";
-                        else
-                            line += to_string(item.price) + "#";
-                        line += "  x" + to_string(item.owned);
-                        if(item.cap > 0)
-                            line += "/" + to_string(item.cap);
-                    }
-                    else
-                        line += "(empty slot)";
-                    writeText(column, row + 2 + index, line, shopWidth);
+                //背包 + 制作:宽窗口左右两栏,窄窗口上下堆叠。
+                //左栏是只读库存,右栏选配方、Enter 制作;配方表加一行就多一个可选配方。
+                const bool split = width >= 64;
+                const int bagWidth = split ? 29 : width;
+                const int craftColumn = split ? bagWidth + 1 : 0;
+                const int craftWidth = split ? width - craftColumn : width;
+                char speedText[16];
+                snprintf(speedText, sizeof(speedText), "%.2fs", RIG_SPEED_MS[speedLevel] / 1000.0);
+
+                const int invTotal = invIron + invCopper + invTin + invStone + invCoal;
+                if(split){
+                    writeText(0, 0, "========== BAG ==========", bagWidth);
+                    writeText(0, 2, "Iron   :" + to_string(invIron), bagWidth);
+                    writeText(0, 3, "Copper :" + to_string(invCopper), bagWidth);
+                    writeText(0, 4, "Tin    :" + to_string(invTin), bagWidth);
+                    writeText(0, 5, "Stone  :" + to_string(invStone), bagWidth);
+                    writeText(0, 6, "Coal   :" + to_string(invCoal), bagWidth);
+                    writeText(0, 7, "Total  :" + to_string(invTotal), bagWidth);
+                    writeText(0, 8, "Rigs   :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), bagWidth);
+                    writeText(0, 9, "Speed  :Lv" + to_string(speedLevel) + " " + speedText, bagWidth);
+                    writeText(0, 10, "Spare  :" + to_string(rigsOwned - static_cast<int>(world.rigs.size())), bagWidth);
+                    for(int row = 0; row < height; row++)
+                        setCell(bagWidth, row, '|');
                 }
-                writeText(column, row + itemCount + 2, "Collected:" + to_string(resourceCount), shopWidth);
-                writeText(column, row + itemCount + 3, shopNotice, shopWidth);
-                writeText(column, row + itemCount + 5, "Up/Down Select   Enter Buy", shopWidth);
-                writeText(column, row + itemCount + 6, "Left Game   Q Quit", shopWidth);
+                else{
+                    writeText(0, 0, "========== BAG ==========", width);
+                    writeText(0, 1, "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper), width);
+                    writeText(0, 2, "Sn:" + to_string(invTin) + " C:" + to_string(invCoal), width);
+                    writeText(0, 3, "Stone:" + to_string(invStone), width);
+                    writeText(0, 4, "Total:" + to_string(invTotal), width);
+                    writeText(0, 5, "Rigs :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), width);
+                    writeText(0, 6, "Speed:Lv" + to_string(speedLevel) + " " + speedText, width);
+                }
+
+                const int base = split ? 0 : 7;
+                writeText(craftColumn, base, "========== CRAFT ==========", craftWidth);
+                for(int index = 0; index < static_cast<int>(recipes.size()); index++){
+                    const Recipe& recipe = recipes[index];
+                    const bool selected = index == recipeSelection;
+                    const bool speedRecipe = recipe.owned == &speedLevel;
+                    const bool maxed = recipe.cap > 0 && *recipe.owned >= recipe.cap;
+                    if(split){
+                        string line = (selected ? "> " : "  ") + to_string(index + 1) + ". " + recipe.name;
+                        if(maxed)
+                            line += "  MAX";
+                        else
+                            line += speedRecipe ? "  Lv" + to_string(*recipe.owned)
+                                                : "  x" + to_string(*recipe.owned);
+                        writeText(craftColumn, base + 2 + index * 3, line, craftWidth);
+                        writeText(craftColumn, base + 3 + index * 3,
+                                  "     " + to_string(recipe.costIron) + "Fe " +
+                                  to_string(recipe.costCopper) + "Cu " +
+                                  to_string(recipe.costTin) + "Sn", craftWidth);
+                    }
+                    else{
+                        //窄窗口:配方压成一行,成本用斜杠分隔,放不下数量就不显示。
+                        string line = (selected ? "> " : "  ") + to_string(index + 1) + ". " +
+                                      recipe.name + " " + to_string(recipe.costIron) + "/" +
+                                      to_string(recipe.costCopper) + "/" + to_string(recipe.costTin);
+                        writeText(craftColumn, base + 1 + index, line, craftWidth);
+                    }
+                }
+                const int noticeRow = split ? base + 8 : base + 3;
+                writeText(craftColumn, noticeRow, craftNotice, craftWidth);
+                if(split){
+                    writeText(craftColumn, base + 10, "Up/Down Select  Enter Craft", craftWidth);
+                    writeText(craftColumn, base + 11, "Left Game   Q Quit", craftWidth);
+                }
+                else{
+                    writeText(craftColumn, base + 4, "Up/Down Craft  Left  Q Quit", craftWidth);
+                }
             }
         }
         present();
