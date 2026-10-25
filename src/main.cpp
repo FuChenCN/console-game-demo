@@ -137,23 +137,36 @@ int main(){
     int scene = 2;
     int titlePhase = 0;                                        //当前颜色相位
     unsigned long long titleDeadline = GetTickCount64();       //下次推相位的时刻
-    const int SHOP_ROBOT = 0;      //商品表里只有这一行会生成跑动单位
-    const int SHOP_SPEEDUP = 1;    //这一行不改数量上限,而是给全体机器人提速
-    const int SPEED_MAX = 4;       //Bot Speedup 最高买到第 4 档
+    const int SHOP_RIG = 0;        //矿机:买来先进背包,到采集场景按 Enter 放置
+    const int SHOP_SPEEDUP = 1;    //这一行不改数量上限,而是给所有矿机提速
+    const int SPEED_MAX = 4;       //Rig Speedup 最高买到第 4 档
     //五档步长(毫秒),下标就是已购档数:第 0 档是初始的 1.0s 一格,买到第 4 档变 0.1s。
-    const int BOT_SPEED_MS[SPEED_MAX + 1] = {1000, 750, 500, 250, 100};
+    const int RIG_SPEED_MS[SPEED_MAX + 1] = {1000, 750, 500, 250, 100};
+    //矿格按所属矿池上色:色相跟着 id 循环,同一片矿脉同色。
+    const BYTE POOL_COLORS[7] = {
+        FOREGROUND_RED | FOREGROUND_INTENSITY,
+        FOREGROUND_GREEN | FOREGROUND_INTENSITY,
+        FOREGROUND_BLUE | FOREGROUND_INTENSITY,
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY,
+        FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,
+        FOREGROUND_BLUE | FOREGROUND_RED | FOREGROUND_INTENSITY,
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,
+    };
+    const int POOL_COLOR_COUNT = 7;
+    const BYTE PLAYER_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
     //商品表驱动商店的画面和购买:加新商品只需在这里多填一行,选择、渲染、扣费、上限都跟着走。
     //后面两项是留出来的空位(available=false),给后续 commit 填实际商品。
     vector<ShopItem> shopItems = {
-        {"Auto Robot", 100, 0, true, world.height},   //一行只能站一个,上限就是地图行数(改成放置式矿机后替换掉)
-        {"Bot Speedup", 1000, 0, true, SPEED_MAX},//五档升级,买满第 4 档到顶
+        {"Mining Rig", 100, 0, true, 0},        //放置式矿机:不限量,买多少台都能放着备用
+        {"Rig Speedup", 1000, 0, true, SPEED_MAX},//五档升级,买满第 4 档到顶
         {"", 0, 0, false, 0},
         {"", 0, 0, false, 0},
     };
     int shopSelection = 0;                          //商店光标指向的商品下标
     string shopNotice = "Pick an item, Enter to buy";  //商店底部反馈行
-    //机器人容器和迈步时刻都归 World 了;第一脚按初始档位排在开局一秒后。
-    world.botDeadline = GetTickCount64() + BOT_SPEED_MS[0];
+    string playNotice;                              //采集场景的放置反馈(2.5 秒后自动消失)
+    unsigned long long playNoticeUntil = 0;
     //调试模式的开门短语。存大写,因为字母键的 wVirtualKeyCode 本身就是大写码,与 Shift 无关。
     const string DEBUG_PHRASE = "OWOISHERE";
     string debugBuffer;             //最近按下的几个字母,只留够匹配短语的长度
@@ -222,8 +235,10 @@ int main(){
         int oldRemainResource = world.remainResource;
         //商店里光标位置和反馈文字的变化,不属于上面那几个数值比较,单独用标志位记。
         bool shopChanged = false;
-        //机器人迈步也算状态变化,同样要上报给下面的 changed,否则画面不动。
-        bool botActed = false;
+        //矿机取矿、矿池回填也算状态变化,同样要上报给下面的 changed,否则画面不动。
+        bool poolActed = false;
+        //放置矿机、提示文字出现/消失同样自己上报。
+        bool uiActed = false;
         //调试操作(开启、发钱、改密度)同样要自己上报,不然侧栏不会刷新。
         bool debugActed = false;
         for(const auto& key : keys){
@@ -276,13 +291,32 @@ int main(){
                 continue;
             }
             if(scene == 0){
-                //采集场景:WASD 移动,E 或空格采掉脚下的资源。
+                //采集场景:WASD 移动,E 或空格采掉脚下的资源,Enter 放一台矿机。
                 if(code == 'W') y = max(0, y - repeat);
                 if(code == 'S') y = min(world.height - 1, y + repeat);
                 if(code == 'A') x = max(0, x - repeat);
                 if(code == 'D') x = min(world.width - 1, x + repeat);
                 if((code == 'E' || code == VK_SPACE) && world.collectAt(x, y)){
                     resourceCount++;   //扣地图资源、减剩余量都在 World 里做了,这里只记背包
+                }
+                if(code == VK_RETURN){
+                    const unsigned long long now = GetTickCount64();
+                    const int owned = shopItems[SHOP_RIG].owned;
+                    const int placed = static_cast<int>(world.rigs.size());
+                    const int stepMs = RIG_SPEED_MS[shopItems[SHOP_SPEEDUP].owned];
+                    if(placed >= owned){
+                        playNotice = "No rig: buy one in the shop";
+                    }
+                    else if(world.placeRig(x, y, now, stepMs)){
+                        //地基那格矿被矿机吃掉,直接进背包,和亲手采的一笔记账。
+                        resourceCount++;
+                        playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
+                    }
+                    else{
+                        playNotice = "Stand on # to place a rig";
+                    }
+                    playNoticeUntil = now + 2500;
+                    uiActed = true;
                 }
                 continue;
             }
@@ -323,17 +357,18 @@ int main(){
                 shopChanged = true;
             }
         }
-        //机器人只在采集场景跑;切到商店时冻住,不会在看不见的地方偷偷吃资源。
-        //原来这里是两个同条件的 if,中间没有别的语句,合并成一个不改变语义。
+        //矿池和矿机只在采集场景运转;切到商店时冻住,不会在看不见的地方偷偷产出。
         if(canPlay && scene == 0){
-            world.syncBots(shopItems[SHOP_ROBOT].owned);
-            //步长取当前升级档位,买到 Bot Speedup 后下一脚就按新间隔走。
-            BotStep step = world.advanceBots(GetTickCount64(),
-                                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned]);
-            //机器人吃掉的资源进背包:扣地图和减剩余量都在 World 里做完了,这里只加计数。
-            resourceCount += step.collected;
-            botActed = step.moved;
-            world.refillIfSparse();
+            const unsigned long long now = GetTickCount64();
+            //先按 5 分钟节奏给未满的池补一格,再让到点的矿机出手。
+            const int grown = world.updatePools(now);
+            const int mined = world.advanceRigs(now, RIG_SPEED_MS[shopItems[SHOP_SPEEDUP].owned]);
+            resourceCount += mined;   //矿机挖到的直接进背包
+            poolActed = (grown > 0) || (mined > 0);
+            if(!playNotice.empty() && now >= playNoticeUntil){
+                playNotice.clear();
+                uiActed = true;
+            }
         }
         //标题页每 TITLE_STEPS_MS 推一次颜色相位;不在标题页就不推,免得白耗重绘。
         bool titleAnimated = false;
@@ -348,7 +383,7 @@ int main(){
         //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
                        resourceCount != oldResourceCount || world.remainResource != oldRemainResource ||
-                       shopChanged || botActed || debugActed || titleAnimated;
+                       shopChanged || poolActed || uiActed || debugActed || titleAnimated;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
             needsPresent = true;
@@ -410,22 +445,31 @@ int main(){
                     for(int column = 0; column < viewW; column++){
                         int mapX = cameraX + column;
                         int mapY = cameraY + row;
-                        char value = mapX == x && mapY == y ? '@' :
-                                     (world.hasResource(mapX, mapY) ? '#' : ' ');
-                        setCell(column, row, value);
+                        if(mapX == x && mapY == y){
+                            setCell(column, row, '@', PLAYER_ATTR);
+                            continue;
+                        }
+                        const uint16_t poolId = world.poolAt(mapX, mapY);
+                        if(poolId != 0){
+                            //矿格按所属矿池上色:同一片矿脉同色,相邻的池由色相循环区分。
+                            setCell(column, row, '#',
+                                    POOL_COLORS[(poolId - 1) % POOL_COLOR_COUNT]);
+                        }
+                        else{
+                            setCell(column, row, ' ');
+                        }
                     }
                 }
-                //机器人盖在资源之上、玩家之下:它踩到的 # 被符号顶掉,但玩家 @ 优先,重叠时不画机器人。
-                for(const Bot& bot : world.bots){
-                    if(bot.x == x && bot.y == y)
+                //矿机盖在矿格之上、玩家之下:玩家 @ 优先,重叠时不画矿机。
+                for(const Rig& rig : world.rigs){
+                    if(rig.x == x && rig.y == y)
                         continue;
-                    int screenX = bot.x - cameraX;
-                    int screenY = bot.y - cameraY;
-                    //地图比可见区域大,跑出视口的机器人不画。
+                    const int screenX = rig.x - cameraX;
+                    const int screenY = rig.y - cameraY;
+                    //地图比可见区域大,跑出视口的矿机不画。
                     if(screenX < 0 || screenX >= viewW || screenY < 0 || screenY >= viewH)
                         continue;
-                    //吃到就是咬合的 =,没吃到按方向显示张口的 < 或 >。
-                    setCell(screenX, screenY, bot.justAte ? '=' : (bot.dir > 0 ? '<' : '>'));
+                    setCell(screenX, screenY, '&', RIG_ATTR);
                 }
                 string position = "X:" + to_string(x) + " Y:" + to_string(y);
                 if(sidebar){
@@ -440,19 +484,29 @@ int main(){
                     writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
-                    writeText(column, 10, "Right Shop  Q Quit", infoWidth);
-                    //正在运作的东西标在侧栏。只有 Auto Robot 会产生跑动单位,
-                    //Bot Speedup 是全体提速,不单独占一行,而是体现在下面那个步长上。
+                    writeText(column, 10, "Right Shop  Enter Rig  Q Quit", infoWidth);
+                    //第 11 行留给放置反馈和备用矿机数量,不占用下面的 Running 段。
+                    if(!playNotice.empty())
+                        writeText(column, 11, playNotice, infoWidth);
+                    else
+                        writeText(column, 11,
+                                  "Rigs spare:" + to_string(shopItems[SHOP_RIG].owned -
+                                                            static_cast<int>(world.rigs.size())),
+                                  infoWidth);
+                    //正在运作的东西标在侧栏:矿机数量、当前速度档。
+                    //Rig Speedup 不给矿机单独占行,而是体现在下面那个步长上。
                     //这几行排在第 12 行之后,终端高度刚好卡在最小值 12 时会画到画面外。
                     int listRow = 12;
                     writeText(column, listRow, "Running:", infoWidth);
                     listRow++;
-                    writeText(column, listRow, "Bots:" + to_string(world.bots.size()) + "/" + to_string(world.height), infoWidth);
+                    writeText(column, listRow,
+                              "Rigs:" + to_string(world.rigs.size()) + "/" +
+                              to_string(shopItems[SHOP_RIG].owned), infoWidth);
                     listRow++;
                     //步长按已购档位取,格式化成两位小数:1000ms 显示 1.00s,100ms 显示 0.10s。
                     char speedText[16];
                     snprintf(speedText, sizeof(speedText), "%.2fs",
-                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned] / 1000.0);
+                             RIG_SPEED_MS[shopItems[SHOP_SPEEDUP].owned] / 1000.0);
                     writeText(column, listRow,
                               string("Speed:Lv") + to_string(shopItems[SHOP_SPEEDUP].owned) + " " +
                               speedText + "/step", infoWidth);
@@ -466,6 +520,12 @@ int main(){
                         //种子显示出来才谈得上复现:嫌图太密/太稀时,把这个数报过来就够,不用截图。
                         writeText(column, listRow, "seed:" + to_string(world.seed), infoWidth);
                         listRow++;
+                        writeText(column, listRow,
+                                  "pools:" + to_string(world.pools.size()) + "  rigs:" +
+                                  to_string(world.rigs.size()), infoWidth);
+                        listRow++;
+                        writeText(column, listRow, "regrow:+1#/5min per pool", infoWidth);
+                        listRow++;
                         writeText(column, listRow, "F +10000#  T up  Y down", infoWidth);
                         listRow++;
                         writeText(column, listRow, "owoishere again: off", infoWidth);
@@ -477,8 +537,10 @@ int main(){
                     writeText(0, viewH + 1, position, width);
                     writeText(0, viewH + 2, "Collected:" + to_string(resourceCount), width);
                     writeText(0, viewH + 3, "Remaining:" + to_string(world.remainResource), width);
-                    writeText(0, viewH + 4, "WASD Move  E/Space Collect", width);
-                    writeText(0, viewH + 5, "Right Shop  Q Quit", width);
+                    writeText(0, viewH + 4,
+                              playNotice.empty() ? string("WASD Move  E/Space Collect") : playNotice,
+                              width);
+                    writeText(0, viewH + 5, "Right Shop  Enter Rig  Q Quit", width);
                 }
             }
             else{
