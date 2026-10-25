@@ -122,7 +122,7 @@ int main(){
         const uint32_t idx = w.pools.front().cells.front();
         const int x = cellX(w, idx);
         const int y = cellY(w, idx);
-        check("rig can be placed before the invalid calls", w.placeRig(x, y, 6000, 1000) > 0);
+        check("rig can be placed before the invalid calls", w.placeRig(x, y, 6000, 1000) == true);
 
         const auto originalCells = w.cells;
         const auto originalOre = w.oreLeft;
@@ -193,7 +193,7 @@ int main(){
         check("poolAt off the map returns 0", w.poolAt(-1, 0) == 0);
         check("oreLeftAt off the map returns 0", w.oreLeftAt(-1, 0) == 0);
         check("collectAt off the map is a no-op", w.collectAt(-3, 7) == false);
-        check("placeRig off the map is a no-op", w.placeRig(-1, 2, 0, 100) == 0);
+        check("placeRig off the map is a no-op", w.placeRig(-1, 2, 0, 100) == false);
     }
 
     printf("\n=== pools agree with the grid, the data and the remaining count ===\n");
@@ -313,7 +313,7 @@ int main(){
         check("remain equals the sum of pool remaining", sumRemaining(w) == w.remainResource);
     }
 
-    printf("\n=== placeRig: collects the foundation data, refuses invalid spots ===\n");
+    printf("\n=== placeRig: keeps the ore under the rig, refuses invalid spots ===\n");
     {
         World w;
         w.init(40, 8, 100, 1u);
@@ -325,21 +325,21 @@ int main(){
         const int poolBefore = pool.remaining;
         const unsigned long long now = 1000;
 
-        check("placement on an ore cell succeeds", w.placeRig(x, y, now, 1000) == ORE_PER_CELL);
-        check("foundation cell is cleared", w.hasResource(x, y) == false);
-        check("remain lost the foundation data", w.remainResource == remainBefore - ORE_PER_CELL);
-        check("pool remaining follows", pool.remaining == poolBefore - ORE_PER_CELL);
+        check("placement on an ore cell succeeds", w.placeRig(x, y, now, 1000) == true);
+        check("ore under the rig is untouched", w.oreLeftAt(x, y) == ORE_PER_CELL);
+        check("placement does not change the balance", w.remainResource == remainBefore);
+        check("placement does not change the pool", pool.remaining == poolBefore);
         check("one rig stored", w.rigs.size() == 1);
         check("rig remembers its pool", w.rigs[0].pool == pool.id);
         check("rig first step is one interval away", w.rigs[0].nextAt == now + 1000);
-        check("the same cell cannot host a second rig", w.placeRig(x, y, now, 1000) == 0);
-        check("zero step is rejected", w.placeRig(x, y, now, 0) == 0);
+        check("the same cell cannot host a second rig", w.placeRig(x, y, now, 1000) == false);
+        check("zero step is rejected", w.placeRig(x, y, now, 0) == false);
 
         World empty;
         empty.init(32, 8, 0, 1u);
-        check("placement on empty ground fails", empty.placeRig(0, 0, 0, 1000) == 0);
+        check("placement on empty ground fails", empty.placeRig(0, 0, 0, 1000) == false);
 
-        //半格矿:先挖掉 30,再放矿机,只收剩下的 70。
+        //半格矿:先挖掉 30,再放矿机,剩下的 70 留在池里,等矿机自己挖。
         World partial;
         partial.init(40, 8, 100, 1u);
         OrePool& partialPool = partial.pools.front();
@@ -349,8 +349,9 @@ int main(){
         for(int i = 0; i < 30; i++)
             partial.collectAt(px, py);
         check("partially mined cell keeps 70 units", partial.oreLeftAt(px, py) == 70);
-        check("placement collects only the remaining 70", partial.placeRig(px, py, 0, 1000) == 70);
-        check("partially mined cell is cleared by placement", partial.hasResource(px, py) == false);
+        check("placement succeeds on a partial cell", partial.placeRig(px, py, 0, 1000) == true);
+        check("the 70 units stay in the pool",
+              partial.hasResource(px, py) == true && partial.oreLeftAt(px, py) == 70);
     }
 
     printf("\n=== advanceRigs: one unit per step, nearest cell, timing gate ===\n");
@@ -361,7 +362,7 @@ int main(){
         const uint32_t idx = pool.cells.front();
         const int x = cellX(w, idx);
         const int y = cellY(w, idx);
-        check("rig placed", w.placeRig(x, y, 1000, 1000) == ORE_PER_CELL);
+        check("rig placed", w.placeRig(x, y, 1000, 1000) == true);
         Rig& rig = w.rigs[0];
 
         const uint32_t expected = nearestCell(w, pool, rig.x, rig.y);
@@ -408,7 +409,7 @@ int main(){
         w.init(32, 8, 100, 1u);
         const uint32_t idx = w.pools.front().cells.front();
         check("rig placed before relayout",
-              w.placeRig(cellX(w, idx), cellY(w, idx), 0, 1000) == ORE_PER_CELL);
+              w.placeRig(cellX(w, idx), cellY(w, idx), 0, 1000) == true);
         w.resourceRate = 50;
         w.relayout();
         check("relayout clears rigs", w.rigs.empty());

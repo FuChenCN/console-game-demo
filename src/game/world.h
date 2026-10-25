@@ -93,9 +93,9 @@ struct World{
     //没有全图扫描:只按各池足迹找第一格空的。
     int updatePools(unsigned long long now);
 
-    //在脚下有矿的格子上放一台矿机:把这格剩余数据一次性收进背包当地基。
-    //返回收走的数据量(1..100);没有矿、越界、或这格已经有矿机时返回 0。
-    int placeRig(int x, int y, unsigned long long now, int stepMs);
+    //在脚下有矿的格子上放一台矿机:只占位,不动这格的数据,落地后从脚下开始挖。
+    //没有矿、越界、或这格已经有矿机时返回 false。
+    bool placeRig(int x, int y, unsigned long long now, int stepMs);
 
     //到点的矿机各取走一格最近的矿;返回这次一共取了多少格。
     int advanceRigs(unsigned long long now, int stepMs);

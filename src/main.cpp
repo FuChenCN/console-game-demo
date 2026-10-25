@@ -307,16 +307,12 @@ int main(){
                     if(placed >= owned){
                         playNotice = "No rig: buy one in the shop";
                     }
+                    else if(world.placeRig(x, y, now, stepMs)){
+                        //放置不结算资源:矿机占住这一格,落地后自己从脚下开始挖。
+                        playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
+                    }
                     else{
-                        const int gained = world.placeRig(x, y, now, stepMs);
-                        if(gained > 0){
-                            //地基那格剩下的数据一次性进背包,和亲手采的记同一笔账。
-                            resourceCount += gained;
-                            playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
-                        }
-                        else{
-                            playNotice = "Stand on # to place a rig";
-                        }
+                        playNotice = "Stand on # to place a rig";
                     }
                     playNoticeUntil = now + 2500;
                     uiActed = true;

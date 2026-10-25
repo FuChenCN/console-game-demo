@@ -258,25 +258,19 @@ int World::updatePools(unsigned long long now){
     return grown;
 }
 
-int World::placeRig(int x, int y, unsigned long long now, int stepMs){
+bool World::placeRig(int x, int y, unsigned long long now, int stepMs){
     if(!inBounds(x, y) || stepMs <= 0)
-        return 0;
+        return false;
     const size_t idx = cellIndex(x, y, width);
     if(cells[idx] == 0)
-        return 0;
+        return false;
     for(const Rig& rig : rigs){
         if(rig.x == x && rig.y == y)
-            return 0;
+            return false;
     }
-    const uint16_t id = cells[idx];
-    //地基那格剩下的数据一次性收走:矿机站在空地上,不会和脚下的 # 抢同一格显示。
-    const int collected = static_cast<int>(oreLeft[idx]);
-    oreLeft[idx] = 0;
-    cells[idx] = 0;
-    pools[id - 1].remaining -= collected;
-    remainResource -= collected;
-    rigs.push_back(Rig{x, y, id, now + static_cast<unsigned long long>(stepMs)});
-    return collected;
+    //矿机只占这一格,不采地基:数据留在池里,落地后按正常节奏从脚下开始挖。
+    rigs.push_back(Rig{x, y, cells[idx], now + static_cast<unsigned long long>(stepMs)});
+    return true;
 }
 
 int World::advanceRigs(unsigned long long now, int stepMs){
