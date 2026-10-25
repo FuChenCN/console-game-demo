@@ -5,8 +5,6 @@
 #include <random>
 #include <vector>
 
-#include "game/types.h"
-
 //地图默认规模。尺寸已经是运行期可变的,这里只是开局初始值——
 //等"世界规模选择"界面做出来,由玩家选中的宽高传进 World::init。
 //512 x 512 = 262144 格,每格 2 字节约 512KB,所以网格只能放堆上(见 cells)。
@@ -30,6 +28,24 @@ enum class OreKind : uint8_t{
 
 inline constexpr int ORE_KIND_COUNT = 3;
 
+//一次出手挖到的东西,按矿种分开计数。玩家一次只挖 1 个,矿机一次也只挖 1 个,
+//但接口按"一捆产出"来设计,以后加范围开采或双倍产出不用改签名。
+struct OreYield{
+    int iron = 0;
+    int copper = 0;
+    int tin = 0;
+
+    int total() const{ return iron + copper + tin; }
+
+    void add(OreKind kind, int amount = 1){
+        switch(kind){
+        case OreKind::Iron: iron += amount; break;
+        case OreKind::Copper: copper += amount; break;
+        case OreKind::Tin: tin += amount; break;
+        }
+    }
+};
+
 //一片矿脉。cells 里存的就是它的 id(1..N),0 表示空格。
 //足迹单独留一份:重生时按足迹回填,不用全图扫描——这正是旧 refillIfSparse 的替换点。
 struct OrePool{
@@ -52,7 +68,7 @@ struct Rig{
 };
 
 //被模拟的世界:矿脉网格、剩余量、密度、矿机。
-//它不知道商店、界面、玩家背包和键盘,那些属于 Game;这一层只描述"世界怎么变"。
+//它不知道背包、制作、界面和键盘,那些属于 Game;这一层只描述"世界怎么变"。
 //
 //不变量: cells[i] != 0 当且仅当 oreLeft[i] > 0(cells 是矿池 id,oreLeft 是 1..100 的数据量);
 //remainResource 必须等于所有 oreLeft 之和,也必须等于所有矿池 remaining 之和。
@@ -97,6 +113,9 @@ struct World{
     //这一格还剩多少数据(0..ORE_PER_CELL);空格或越界返回 0。
     int oreLeftAt(int x, int y) const;
 
+    //这一格属于哪种矿;只有 hasResource 为真时返回 true。
+    bool oreKindAt(int x, int y, OreKind& kind) const;
+
     //采下脚下这一格:只有真的有资源才改动世界并返回 true。
     bool collectAt(int x, int y);
 
@@ -108,8 +127,8 @@ struct World{
     //没有矿、越界、或这格已经有矿机时返回 false。
     bool placeRig(int x, int y, unsigned long long now, int stepMs);
 
-    //到点的矿机各取走一格最近的矿;返回这次一共取了多少格。
-    int advanceRigs(unsigned long long now, int stepMs);
+    //到点的矿机各取走 1 个数据;返回这次按矿种分开的产出。
+    OreYield advanceRigs(unsigned long long now, int stepMs);
 };
 
 #endif

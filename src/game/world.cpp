@@ -219,6 +219,16 @@ int World::oreLeftAt(int x, int y) const{
     return static_cast<int>(oreLeft[cellIndex(x, y, width)]);
 }
 
+bool World::oreKindAt(int x, int y, OreKind& kind) const{
+    if(!inBounds(x, y))
+        return false;
+    const uint16_t id = cells[cellIndex(x, y, width)];
+    if(id == 0)
+        return false;
+    kind = pools[id - 1].kind;
+    return true;
+}
+
 bool World::collectAt(int x, int y){
     if(!hasResource(x, y))
         return false;
@@ -275,8 +285,8 @@ bool World::placeRig(int x, int y, unsigned long long now, int stepMs){
     return true;
 }
 
-int World::advanceRigs(unsigned long long now, int stepMs){
-    int collected = 0;
+OreYield World::advanceRigs(unsigned long long now, int stepMs){
+    OreYield collected;
     for(Rig& rig : rigs){
         if(now < rig.nextAt)
             continue;
@@ -309,7 +319,7 @@ int World::advanceRigs(unsigned long long now, int stepMs){
         remainResource--;
         if(oreLeft[best] == 0)
             cells[best] = 0;
-        collected++;
+        collected.add(pool.kind);
     }
     return collected;
 }

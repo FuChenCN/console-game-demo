@@ -61,6 +61,15 @@ static void drainPool(World& w, OrePool& pool){
         drainCell(w, cellX(w, idx), cellY(w, idx));
 }
 
+static int yieldOf(const OreYield& yield, OreKind kind){
+    switch(kind){
+    case OreKind::Iron: return yield.iron;
+    case OreKind::Copper: return yield.copper;
+    case OreKind::Tin: return yield.tin;
+    }
+    return 0;
+}
+
 //池子里离矿机最近的一格。advanceRigs 的取矿顺序要和它一致。
 static uint32_t nearestCell(const World& w, const OrePool& pool, int x, int y){
     uint32_t best = 0;
@@ -345,6 +354,40 @@ int main(){
             if(low.pools[i].kind != high.pools[i].kind || low.pools[i].id != high.pools[i].id)
                 prefixKinds = false;
         check("raising density keeps the prefix pools' kinds", prefixKinds);
+
+        //每一格都能报出自己的矿种,矿机产出也按矿种分开。
+        World map;
+        map.init(512, 512, 6, 42u);
+        bool kindAtOk = true;
+        bool kindsSeen[ORE_KIND_COUNT] = {false, false, false};
+        for(const OrePool& pool : map.pools){
+            const uint32_t idx = pool.cells.front();
+            OreKind kind = OreKind::Iron;
+            if(!map.oreKindAt(cellX(map, idx), cellY(map, idx), kind) || kind != pool.kind)
+                kindAtOk = false;
+            kindsSeen[static_cast<int>(pool.kind)] = true;
+        }
+        check("oreKindAt reports the pool's kind", kindAtOk);
+        check("all three kinds are observable on the map",
+              kindsSeen[0] && kindsSeen[1] && kindsSeen[2]);
+
+        for(int target = 0; target < ORE_KIND_COUNT; target++){
+            World w;
+            w.init(512, 512, 6, 42u);
+            const OreKind wanted = static_cast<OreKind>(target);
+            const OrePool* found = nullptr;
+            for(const OrePool& pool : w.pools)
+                if(pool.kind == wanted){ found = &pool; break; }
+            check("a pool of the wanted kind exists", found != nullptr);
+            if(!found)
+                continue;
+            const uint32_t idx = found->cells.front();
+            check("rig placed on that pool",
+                  w.placeRig(cellX(w, idx), cellY(w, idx), 1000, 1000) == true);
+            const OreYield yield = w.advanceRigs(2000, 1000);
+            check("one unit came out", yield.total() == 1);
+            check("and it is the right ore kind", yieldOf(yield, wanted) == 1);
+        }
     }
 
     printf("\n=== density still behaves statistically ===\n");
@@ -423,8 +466,8 @@ int main(){
         const int remainBefore = w.remainResource;
         check("expected target still has data", w.oreLeft[expected] > 0);
 
-        check("before the deadline: nothing", w.advanceRigs(1999, 1000) == 0);
-        check("at the deadline: one unit", w.advanceRigs(2000, 1000) == 1);
+        check("before the deadline: nothing", w.advanceRigs(1999, 1000).total() == 0);
+        check("at the deadline: one unit", w.advanceRigs(2000, 1000).total() == 1);
         check("the nearest cell lost one unit", w.oreLeft[expected] == ORE_PER_CELL - 1);
         check("the nearest cell is still there", w.cells[expected] == pool.id);
         check("pool remaining decremented by one", pool.remaining == poolBefore - 1);
@@ -436,7 +479,7 @@ int main(){
         int mined = 0;
         for(int i = 0; i < ORE_PER_CELL - 1; i++){
             rig.nextAt = now;
-            mined += w.advanceRigs(now, 1000);
+            mined += w.advanceRigs(now, 1000).total();
             now += 1000;
         }
         check("the remaining 99 units are mined", mined == ORE_PER_CELL - 1);
@@ -446,14 +489,14 @@ int main(){
         drainPool(w, pool);
         check("pool drained", pool.remaining == 0);
         rig.nextAt = 100000;
-        check("idle rig mines nothing", w.advanceRigs(100000, 1000) == 0);
+        check("idle rig mines nothing", w.advanceRigs(100000, 1000).total() == 0);
         check("idle rig still reschedules", rig.nextAt == 101000);
 
         //池子回一格(满 100)之后,矿机又能接着挖。
         pool.nextRegrowAt = 200000;
         check("one cell regrown", w.updatePools(200000) == 1);
         rig.nextAt = 200000;
-        check("rig picks the regrown cell", w.advanceRigs(200000, 1000) == 1);
+        check("rig picks the regrown cell", w.advanceRigs(200000, 1000).total() == 1);
     }
 
     printf("\n=== relayout rebuilds pools and drops rigs ===\n");
