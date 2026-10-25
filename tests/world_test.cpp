@@ -66,6 +66,8 @@ static int yieldOf(const OreYield& yield, OreKind kind){
     case OreKind::Iron: return yield.iron;
     case OreKind::Copper: return yield.copper;
     case OreKind::Tin: return yield.tin;
+    case OreKind::Stone: return yield.stone;
+    case OreKind::Coal: return yield.coal;
     }
     return 0;
 }
@@ -308,13 +310,13 @@ int main(){
         check("its remaining data is untouched", w.oreLeftAt(x, y) == ORE_PER_CELL - 1);
     }
 
-    printf("\n=== three ore kinds: iron, copper, tin ===\n");
+    printf("\n=== five ore kinds: iron, copper, tin, stone, coal ===\n");
     {
-        check("there are exactly three kinds", ORE_KIND_COUNT == 3);
+        check("there are exactly five kinds", ORE_KIND_COUNT == 5);
 
         World w;
         w.init(512, 512, 6, 42u);
-        int counts[ORE_KIND_COUNT] = {0, 0, 0};
+        int counts[ORE_KIND_COUNT] = {};
         bool valid = true;
         for(const OrePool& pool : w.pools){
             const int kind = static_cast<int>(pool.kind);
@@ -322,17 +324,19 @@ int main(){
             else counts[kind]++;
         }
         check("every pool has a valid kind", valid);
-        check("all three kinds appear on the default map",
-              counts[0] > 0 && counts[1] > 0 && counts[2] > 0);
+        bool allKinds = true;
+        for(int i = 0; i < ORE_KIND_COUNT; i++)
+            if(counts[i] <= 0) allKinds = false;
+        check("all five kinds appear on the default map", allKinds);
         int smallest = counts[0];
         int largest = counts[0];
         for(int i = 1; i < ORE_KIND_COUNT; i++){
             if(counts[i] < smallest) smallest = counts[i];
             if(counts[i] > largest) largest = counts[i];
         }
-        check("the three kinds are split evenly", largest - smallest <= 1);
-        printf("  INFO  default 512x512: Fe=%d Cu=%d Sn=%d (%zu pools)\n",
-               counts[0], counts[1], counts[2], w.pools.size());
+        check("the five kinds are split evenly", largest - smallest <= 1);
+        printf("  INFO  default 512x512: Fe=%d Cu=%d Sn=%d SiO2=%d C=%d (%zu pools)\n",
+               counts[0], counts[1], counts[2], counts[3], counts[4], w.pools.size());
 
         //重铺不改类型:id 不变,类型也不变。
         OreKind before[8];
@@ -359,7 +363,7 @@ int main(){
         World map;
         map.init(512, 512, 6, 42u);
         bool kindAtOk = true;
-        bool kindsSeen[ORE_KIND_COUNT] = {false, false, false};
+        bool kindsSeen[ORE_KIND_COUNT] = {};
         for(const OrePool& pool : map.pools){
             const uint32_t idx = pool.cells.front();
             OreKind kind = OreKind::Iron;
@@ -368,8 +372,10 @@ int main(){
             kindsSeen[static_cast<int>(pool.kind)] = true;
         }
         check("oreKindAt reports the pool's kind", kindAtOk);
-        check("all three kinds are observable on the map",
-              kindsSeen[0] && kindsSeen[1] && kindsSeen[2]);
+        bool seenAll = true;
+        for(int i = 0; i < ORE_KIND_COUNT; i++)
+            if(!kindsSeen[i]) seenAll = false;
+        check("all five kinds are observable on the map", seenAll);
 
         for(int target = 0; target < ORE_KIND_COUNT; target++){
             World w;

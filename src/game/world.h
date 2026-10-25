@@ -24,9 +24,11 @@ enum class OreKind : uint8_t{
     Iron = 0,     //灰
     Copper = 1,   //橙
     Tin = 2,      //青灰
+    Stone = 3,    //土黄,SiO2
+    Coal = 4,     //煤,C
 };
 
-inline constexpr int ORE_KIND_COUNT = 3;
+inline constexpr int ORE_KIND_COUNT = 5;
 
 //一次出手挖到的东西,按矿种分开计数。玩家一次只挖 1 个,矿机一次也只挖 1 个,
 //但接口按"一捆产出"来设计,以后加范围开采或双倍产出不用改签名。
@@ -34,14 +36,18 @@ struct OreYield{
     int iron = 0;
     int copper = 0;
     int tin = 0;
+    int stone = 0;
+    int coal = 0;
 
-    int total() const{ return iron + copper + tin; }
+    int total() const{ return iron + copper + tin + stone + coal; }
 
     void add(OreKind kind, int amount = 1){
         switch(kind){
         case OreKind::Iron: iron += amount; break;
         case OreKind::Copper: copper += amount; break;
         case OreKind::Tin: tin += amount; break;
+        case OreKind::Stone: stone += amount; break;
+        case OreKind::Coal: coal += amount; break;
         }
     }
 };

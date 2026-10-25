@@ -154,20 +154,27 @@ int main(){
         FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,        //铁:浅灰
         FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY,   //铜:橙
         FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,  //锡:青灰
+        FOREGROUND_RED | FOREGROUND_GREEN,                          //石:土黄
+        FOREGROUND_INTENSITY,                                       //煤:深灰
     };
     const BYTE ORE_COLORS_DIM[ORE_KIND_COUNT] = {
         FOREGROUND_INTENSITY,                                       //铁:深灰
         FOREGROUND_RED | FOREGROUND_GREEN,                          //铜:暗黄
         FOREGROUND_GREEN | FOREGROUND_BLUE,                         //锡:暗青
+        FOREGROUND_RED,                                             //石:褐
+        FOREGROUND_INTENSITY,                                       //煤:保持深灰,再暗就看不见了
     };
-    //每个矿格在屏幕上占两列,直接写元素符号。
-    const char* ORE_LABELS[ORE_KIND_COUNT] = {"Fe", "Cu", "Sn"};
+    //每个矿格在屏幕上占 4 列:SiO2 要 4 个字符,其余符号右补空格。
+    const string ORE_LABELS[ORE_KIND_COUNT] = {"Fe", "Cu", "Sn", "SiO2", "C"};
+    const int CELL_COLS = 4;
     const BYTE PLAYER_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
     const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
     //背包按矿种分开计数;制作扣对应矿种。
     int invIron = 0;
     int invCopper = 0;
     int invTin = 0;
+    int invStone = 0;
+    int invCoal = 0;
     int rigsOwned = 0;          //已制作总数,包含已经放出去的
     int speedLevel = 0;         //0..SPEED_MAX
     //制作表驱动右栏:加一个配方只需多填一行,成本、上限、数量都跟着走。
@@ -277,10 +284,12 @@ int main(){
             //所以它们会先进缓冲、再被当成命令执行,两者不冲突。
             if(debugOn){
                 if(code == 'F'){
-                    //调试补给:三类矿各加 10000,不动 Remaining(地图上的 # 不变)。
+                    //调试补给:五类矿各加 10000,不动 Remaining(地图上的矿格不变)。
                     invIron += 10000;
                     invCopper += 10000;
                     invTin += 10000;
+                    invStone += 10000;
+                    invCoal += 10000;
                     debugActed = true;
                 }
                 if(code == 'T'){
@@ -315,6 +324,8 @@ int main(){
                         case OreKind::Iron: invIron++; break;
                         case OreKind::Copper: invCopper++; break;
                         case OreKind::Tin: invTin++; break;
+                        case OreKind::Stone: invStone++; break;
+                        case OreKind::Coal: invCoal++; break;
                         }
                     }
                 }
@@ -382,6 +393,8 @@ int main(){
             invIron += mined.iron;
             invCopper += mined.copper;
             invTin += mined.tin;
+            invStone += mined.stone;
+            invCoal += mined.coal;
             poolActed = (grown > 0) || (mined.total() > 0);
             if(!playNotice.empty() && now >= playNoticeUntil){
                 playNotice.clear();
@@ -456,36 +469,35 @@ int main(){
                 //注意两套尺寸:width / height 是终端窗口大小,world.width / world.height 是地图大小。
                 //每个地图格占 2 个屏幕列(Fe/Cu/Sn 两个字),所以横向能看到的格子数只有列数的一半。
                 int available = width - (sidebar ? 31 : 0);
-                int viewW = min(world.width, available / 2);
+                int viewW = min(world.width, available / CELL_COLS);
                 int viewH = min(world.height, height - (sidebar ? 0 : 6));
                 int cameraX = clamp(x - viewW / 2, 0, world.width - viewW);
                 int cameraY = clamp(y - viewH / 2, 0, world.height - viewH);
+                //一个 token 固定占 CELL_COLS 列,短符号右补空格。
+                auto writeToken = [&](int column, int row, const string& text, int attr){
+                    for(int i = 0; i < CELL_COLS; i++)
+                        setCell(column + i, row,
+                                i < static_cast<int>(text.size()) ? text[i] : ' ', attr);
+                };
                 for(int row = 0; row < viewH; row++){
                     for(int cell = 0; cell < viewW; cell++){
-                        const int screenX = cell * 2;
+                        const int screenX = cell * CELL_COLS;
                         const int mapX = cameraX + cell;
                         const int mapY = cameraY + row;
                         if(mapX == x && mapY == y){
-                            setCell(screenX, row, '@', PLAYER_ATTR);
-                            setCell(screenX + 1, row, ' ', PLAYER_ATTR);
+                            writeToken(screenX, row, "@", PLAYER_ATTR);
                             continue;
                         }
                         const uint16_t poolId = world.poolAt(mapX, mapY);
-                        if(poolId != 0){
-                            //颜色跟着矿脉类型走:铁灰、铜橙、锡青灰。
-                            //挖过但没挖空的格子换成同色系的暗色,一眼能看出这格被啃过。
-                            const int kind = static_cast<int>(world.pools[poolId - 1].kind);
-                            const BYTE color = world.oreLeftAt(mapX, mapY) == ORE_PER_CELL
-                                                   ? ORE_COLORS[kind]
-                                                   : ORE_COLORS_DIM[kind];
-                            const char* label = ORE_LABELS[kind];
-                            setCell(screenX, row, label[0], color);
-                            setCell(screenX + 1, row, label[1], color);
-                        }
-                        else{
-                            setCell(screenX, row, ' ');
-                            setCell(screenX + 1, row, ' ');
-                        }
+                        if(poolId == 0)
+                            continue;   //空格的空白由整帧 fill 负责,不必逐格写
+                        //颜色跟着矿脉类型走:铁灰、铜橙、锡青灰、石土黄、煤深灰。
+                        //挖过但没挖空的格子换成同色系的暗色,一眼能看出这格被啃过。
+                        const int kind = static_cast<int>(world.pools[poolId - 1].kind);
+                        const BYTE color = world.oreLeftAt(mapX, mapY) == ORE_PER_CELL
+                                               ? ORE_COLORS[kind]
+                                               : ORE_COLORS_DIM[kind];
+                        writeToken(screenX, row, ORE_LABELS[kind], color);
                     }
                 }
                 //矿机盖在矿格之上、玩家之下:玩家 @ 优先,重叠时不画矿机。
@@ -496,23 +508,24 @@ int main(){
                     if(rig.x < cameraX || rig.x >= cameraX + viewW ||
                        rig.y < cameraY || rig.y >= cameraY + viewH)
                         continue;
-                    const int screenX = (rig.x - cameraX) * 2;
+                    const int screenX = (rig.x - cameraX) * CELL_COLS;
                     const int screenY = rig.y - cameraY;
-                    setCell(screenX, screenY, '&', RIG_ATTR);
-                    setCell(screenX + 1, screenY, ' ', RIG_ATTR);
+                    writeToken(screenX, screenY, "&", RIG_ATTR);
                 }
                 string position = "X:" + to_string(x) + " Y:" + to_string(y);
                 if(sidebar){
                     for(int row = 0; row < height; row++)
-                        setCell(viewW * 2, row, '|');
-                    int column = viewW * 2 + 1;
+                        setCell(viewW * CELL_COLS, row, '|');
+                    int column = viewW * CELL_COLS + 1;
                     int infoWidth = width - column;
                     writeText(column, 0, "PYS", infoWidth);
                     writeText(column, 2, position, infoWidth);
                     writeText(column, 3,
                               "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper) +
                               " Sn:" + to_string(invTin), infoWidth);
-                    writeText(column, 4, "Remaining:" + to_string(world.remainResource), infoWidth);
+                    writeText(column, 4,
+                              "C:" + to_string(invCoal) + " SiO2:" + to_string(invStone), infoWidth);
+                    writeText(column, 5, "Remaining:" + to_string(world.remainResource), infoWidth);
                     writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
                     writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
@@ -552,14 +565,19 @@ int main(){
                         //种子显示出来才谈得上复现:嫌图太密/太稀时,把这个数报过来就够,不用截图。
                         writeText(column, listRow, "seed:" + to_string(world.seed), infoWidth);
                         listRow++;
-                        int kindCount[ORE_KIND_COUNT] = {0, 0, 0};
+                        int kindCount[ORE_KIND_COUNT] = {};
                         for(const OrePool& pool : world.pools)
                             kindCount[static_cast<int>(pool.kind)]++;
                         writeText(column, listRow,
                                   "pools:" + to_string(world.pools.size()) +
-                                  " Fe/Cu/Sn:" + to_string(kindCount[0]) + "/" +
-                                  to_string(kindCount[1]) + "/" + to_string(kindCount[2]) +
-                                  " rigs:" + to_string(world.rigs.size()), infoWidth);
+                                  "  rigs:" + to_string(world.rigs.size()), infoWidth);
+                        listRow++;
+                        writeText(column, listRow,
+                                  "Fe" + to_string(kindCount[0]) +
+                                  " Cu" + to_string(kindCount[1]) +
+                                  " Sn" + to_string(kindCount[2]) +
+                                  " Si" + to_string(kindCount[3]) +
+                                  " C" + to_string(kindCount[4]), infoWidth);
                         listRow++;
                         writeText(column, listRow, "regrow:+1#/5min  cell:100#", infoWidth);
                         listRow++;
@@ -575,7 +593,9 @@ int main(){
                     writeText(0, viewH + 2,
                               "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper) +
                               " Sn:" + to_string(invTin), width);
-                    writeText(0, viewH + 3, "Remaining:" + to_string(world.remainResource), width);
+                    writeText(0, viewH + 3,
+                              "C:" + to_string(invCoal) + " SiO2:" + to_string(invStone) +
+                              " Rem:" + to_string(world.remainResource), width);
                     writeText(0, viewH + 4,
                               playNotice.empty() ? string("WASD Move  E/Space Collect") : playNotice,
                               width);
@@ -592,26 +612,29 @@ int main(){
                 char speedText[16];
                 snprintf(speedText, sizeof(speedText), "%.2fs", RIG_SPEED_MS[speedLevel] / 1000.0);
 
+                const int invTotal = invIron + invCopper + invTin + invStone + invCoal;
                 if(split){
                     writeText(0, 0, "========== BAG ==========", bagWidth);
                     writeText(0, 2, "Iron   :" + to_string(invIron), bagWidth);
                     writeText(0, 3, "Copper :" + to_string(invCopper), bagWidth);
                     writeText(0, 4, "Tin    :" + to_string(invTin), bagWidth);
-                    writeText(0, 5, "Total  :" + to_string(invIron + invCopper + invTin), bagWidth);
-                    writeText(0, 6, "Rigs   :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), bagWidth);
-                    writeText(0, 7, "Speed  :Lv" + to_string(speedLevel) + " " + speedText, bagWidth);
-                    writeText(0, 8, "Spare  :" + to_string(rigsOwned - static_cast<int>(world.rigs.size())), bagWidth);
+                    writeText(0, 5, "SiO2   :" + to_string(invStone), bagWidth);
+                    writeText(0, 6, "Coal   :" + to_string(invCoal), bagWidth);
+                    writeText(0, 7, "Total  :" + to_string(invTotal), bagWidth);
+                    writeText(0, 8, "Rigs   :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), bagWidth);
+                    writeText(0, 9, "Speed  :Lv" + to_string(speedLevel) + " " + speedText, bagWidth);
+                    writeText(0, 10, "Spare  :" + to_string(rigsOwned - static_cast<int>(world.rigs.size())), bagWidth);
                     for(int row = 0; row < height; row++)
                         setCell(bagWidth, row, '|');
                 }
                 else{
                     writeText(0, 0, "========== BAG ==========", width);
-                    writeText(0, 1, "Iron   :" + to_string(invIron), width);
-                    writeText(0, 2, "Copper :" + to_string(invCopper), width);
-                    writeText(0, 3, "Tin    :" + to_string(invTin), width);
-                    writeText(0, 4, "Total  :" + to_string(invIron + invCopper + invTin), width);
-                    writeText(0, 5, "Rigs   :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), width);
-                    writeText(0, 6, "Speed  :Lv" + to_string(speedLevel) + " " + speedText, width);
+                    writeText(0, 1, "Fe:" + to_string(invIron) + " Cu:" + to_string(invCopper), width);
+                    writeText(0, 2, "Sn:" + to_string(invTin) + " C:" + to_string(invCoal), width);
+                    writeText(0, 3, "SiO2:" + to_string(invStone), width);
+                    writeText(0, 4, "Total:" + to_string(invTotal), width);
+                    writeText(0, 5, "Rigs :" + to_string(world.rigs.size()) + "/" + to_string(rigsOwned), width);
+                    writeText(0, 6, "Speed:Lv" + to_string(speedLevel) + " " + speedText, width);
                 }
 
                 const int base = split ? 0 : 7;
