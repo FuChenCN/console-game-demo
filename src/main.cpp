@@ -307,13 +307,16 @@ int main(){
                     if(placed >= owned){
                         playNotice = "No rig: buy one in the shop";
                     }
-                    else if(world.placeRig(x, y, now, stepMs)){
-                        //地基那格矿被矿机吃掉,直接进背包,和亲手采的一笔记账。
-                        resourceCount++;
-                        playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
-                    }
                     else{
-                        playNotice = "Stand on # to place a rig";
+                        const int gained = world.placeRig(x, y, now, stepMs);
+                        if(gained > 0){
+                            //地基那格剩下的数据一次性进背包,和亲手采的记同一笔账。
+                            resourceCount += gained;
+                            playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
+                        }
+                        else{
+                            playNotice = "Stand on # to place a rig";
+                        }
                     }
                     playNoticeUntil = now + 2500;
                     uiActed = true;
@@ -452,8 +455,11 @@ int main(){
                         const uint16_t poolId = world.poolAt(mapX, mapY);
                         if(poolId != 0){
                             //矿格按所属矿池上色:同一片矿脉同色,相邻的池由色相循环区分。
-                            setCell(column, row, '#',
-                                    POOL_COLORS[(poolId - 1) % POOL_COLOR_COUNT]);
+                            //挖过但没挖空的格子去掉高亮,颜色变暗,一眼能看出这格被啃过。
+                            BYTE color = POOL_COLORS[(poolId - 1) % POOL_COLOR_COUNT];
+                            if(world.oreLeftAt(mapX, mapY) < ORE_PER_CELL)
+                                color = static_cast<BYTE>(color & ~FOREGROUND_INTENSITY);
+                            setCell(column, row, '#', color);
                         }
                         else{
                             setCell(column, row, ' ');
@@ -524,7 +530,7 @@ int main(){
                                   "pools:" + to_string(world.pools.size()) + "  rigs:" +
                                   to_string(world.rigs.size()), infoWidth);
                         listRow++;
-                        writeText(column, listRow, "regrow:+1#/5min per pool", infoWidth);
+                        writeText(column, listRow, "regrow:+1#/5min  cell:100#", infoWidth);
                         listRow++;
                         writeText(column, listRow, "F +10000#  T up  Y down", infoWidth);
                         listRow++;

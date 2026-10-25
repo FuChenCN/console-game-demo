@@ -10,7 +10,9 @@ $target  = Join-Path $root 'PYS.exe'
 if (-not $sources) { throw "no .cpp found under $srcDir" }
 
 Write-Host ("compiling {0} source file(s) -> {1}" -f $sources.Count, $target)
-& g++ -std=c++17 -Wall -Wextra -O2 "-I$srcDir" @sources -o $target
+# -static 把 libstdc++/libgcc/libwinpthread 一起链进来,双击或换个终端也能直接跑,
+# 不依赖 MinGW 的 bin 目录在 PATH 里。
+& g++ -std=c++17 -Wall -Wextra -O2 -static "-I$srcDir" @sources -o $target
 
 if ($LASTEXITCODE -ne 0) { throw "g++ failed with exit code $LASTEXITCODE" }
 Write-Host "ok: $((Get-Item $target).Length) bytes"

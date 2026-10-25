@@ -42,6 +42,7 @@ void World::relayout(){
     //重铺从同一序列头开始:改密度不会连带把位置也换一套。
     rng.seed(seed);
     cells.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
+    oreLeft.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
     remainResource = 0;
     pools.clear();
     //旧矿池的 id 会全部重排,矿机不能跨图保留,重铺时一律拆掉。
@@ -53,6 +54,8 @@ void World::relayout(){
         target = area;
     if(target <= 0)
         return;
+    //target 数的是格子;remainResource 数的是数据量(每格 100),比较时换算一次。
+    const long long targetUnits = target * ORE_PER_CELL;
 
     //候选矿脉:先按种子生成一批"中心 + 目标格数",再按密度激活前 N 条。
     //只生长激活的那几条,且只和已经激活的池抢地——所以提高密度时,
@@ -74,7 +77,7 @@ void World::relayout(){
     }
 
     std::uniform_int_distribution<int> pickDir(0, 3);
-    for(int i = 0; i < active && remainResource < target; i++){
+    for(int i = 0; i < active && remainResource < targetUnits; i++){
         const PoolCandidate& candidate = candidates[static_cast<size_t>(i)];
 
         //中心被别的池占了就沿方框向外找最近的空格;找不到就跳过这条候选。
@@ -113,8 +116,9 @@ void World::relayout(){
         pool.nextRegrowAt = 0;
 
         cells[seedCell] = id;
+        oreLeft[seedCell] = ORE_PER_CELL;
         pool.cells.push_back(seedCell);
-        remainResource++;
+        remainResource += ORE_PER_CELL;
 
         //随机游走长团块:每次从已有格子里挑一格,往随机方向扩一格。
         int fails = 0;
@@ -137,28 +141,29 @@ void World::relayout(){
                 continue;
             }
             cells[ni] = id;
+            oreLeft[ni] = ORE_PER_CELL;
             pool.cells.push_back(static_cast<uint32_t>(ni));
-            remainResource++;
+            remainResource += ORE_PER_CELL;
             fails = 0;
         }
         if(pool.cells.empty())
             continue;
-        pool.capacity = static_cast<int>(pool.cells.size());
+        pool.capacity = static_cast<int>(pool.cells.size()) * ORE_PER_CELL;
         pool.remaining = pool.capacity;
         pools.push_back(std::move(pool));
     }
 
     //高密度下随机游走会被已占格切碎、长不满。把剩下的空格并给相邻的池,
     //这样 rate=100 仍然铺满整张图,密度语义和旧实现一致。
-    if(remainResource < target){
+    if(remainResource < targetUnits){
         bool changed = true;
         bool reached = false;
-        while(remainResource < target && changed && !reached){
+        while(remainResource < targetUnits && changed && !reached){
             changed = false;
             for(int row = 0; row < height && !reached; row++){
                 for(int column = 0; column < width; column++){
                     //补到目标就停,不能任由同一趟扫描靠连锁反应铺满全图。
-                    if(remainResource >= target){
+                    if(remainResource >= targetUnits){
                         reached = true;
                         break;
                     }
@@ -177,11 +182,12 @@ void World::relayout(){
                     if(id == 0)
                         continue;
                     cells[idx] = id;
+                    oreLeft[idx] = ORE_PER_CELL;
                     OrePool& pool = pools[id - 1];
                     pool.cells.push_back(static_cast<uint32_t>(idx));
-                    pool.capacity++;
-                    pool.remaining++;
-                    remainResource++;
+                    pool.capacity += ORE_PER_CELL;
+                    pool.remaining += ORE_PER_CELL;
+                    remainResource += ORE_PER_CELL;
                     changed = true;
                 }
             }
@@ -205,14 +211,22 @@ uint16_t World::poolAt(int x, int y) const{
     return cells[cellIndex(x, y, width)];
 }
 
+int World::oreLeftAt(int x, int y) const{
+    if(!inBounds(x, y))
+        return 0;
+    return static_cast<int>(oreLeft[cellIndex(x, y, width)]);
+}
+
 bool World::collectAt(int x, int y){
     if(!hasResource(x, y))
         return false;
     const size_t idx = cellIndex(x, y, width);
     const uint16_t id = cells[idx];
-    cells[idx] = 0;
-    remainResource--;
+    oreLeft[idx]--;
     pools[id - 1].remaining--;
+    remainResource--;
+    if(oreLeft[idx] == 0)
+        cells[idx] = 0;   //数据挖空了这格才消失
     return true;
 }
 
@@ -231,10 +245,11 @@ int World::updatePools(unsigned long long now){
         if(pool.remaining >= pool.capacity)
             continue;
         for(const uint32_t idx : pool.cells){
-            if(cells[idx] == 0){
+            if(oreLeft[idx] == 0){
                 cells[idx] = pool.id;
-                pool.remaining++;
-                remainResource++;
+                oreLeft[idx] = ORE_PER_CELL;
+                pool.remaining += ORE_PER_CELL;
+                remainResource += ORE_PER_CELL;
                 grown++;
                 break;
             }
@@ -243,23 +258,25 @@ int World::updatePools(unsigned long long now){
     return grown;
 }
 
-bool World::placeRig(int x, int y, unsigned long long now, int stepMs){
+int World::placeRig(int x, int y, unsigned long long now, int stepMs){
     if(!inBounds(x, y) || stepMs <= 0)
-        return false;
+        return 0;
     const size_t idx = cellIndex(x, y, width);
     if(cells[idx] == 0)
-        return false;
+        return 0;
     for(const Rig& rig : rigs){
         if(rig.x == x && rig.y == y)
-            return false;
+            return 0;
     }
     const uint16_t id = cells[idx];
-    //地基那格矿直接采掉:矿机站在空地上,不会和脚下的 # 抢同一格显示。
+    //地基那格剩下的数据一次性收走:矿机站在空地上,不会和脚下的 # 抢同一格显示。
+    const int collected = static_cast<int>(oreLeft[idx]);
+    oreLeft[idx] = 0;
     cells[idx] = 0;
-    pools[id - 1].remaining--;
-    remainResource--;
+    pools[id - 1].remaining -= collected;
+    remainResource -= collected;
     rigs.push_back(Rig{x, y, id, now + static_cast<unsigned long long>(stepMs)});
-    return true;
+    return collected;
 }
 
 int World::advanceRigs(unsigned long long now, int stepMs){
@@ -275,7 +292,7 @@ int World::advanceRigs(unsigned long long now, int stepMs){
         if(pool.remaining <= 0)
             continue;
 
-        //取池子里离矿机最近的一格:矿区会从矿机附近开始消失,看着像在被挖。
+        //取池子里离矿机最近的一格,每出手扣它 1 个数据;扣到 0 这格才消失。
         uint32_t best = 0;
         int bestDistance = std::numeric_limits<int>::max();
         for(const uint32_t idx : pool.cells){
@@ -291,9 +308,11 @@ int World::advanceRigs(unsigned long long now, int stepMs){
         }
         if(bestDistance == std::numeric_limits<int>::max())
             continue;
-        cells[best] = 0;
+        oreLeft[best]--;
         pool.remaining--;
         remainResource--;
+        if(oreLeft[best] == 0)
+            cells[best] = 0;
         collected++;
     }
     return collected;
