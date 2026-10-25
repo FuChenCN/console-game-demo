@@ -109,6 +109,8 @@ void World::relayout(){
 
         OrePool pool;
         pool.id = id;
+        //类型按 id 均分:同一张图三类数量基本相等,且密度变化时前缀池的类型不变。
+        pool.kind = static_cast<OreKind>((id - 1) % ORE_KIND_COUNT);
         pool.cx = static_cast<int>(seedCell % static_cast<uint32_t>(width));
         pool.cy = static_cast<int>(seedCell / static_cast<uint32_t>(width));
         pool.capacity = 0;

@@ -142,19 +142,20 @@ int main(){
     const int SPEED_MAX = 4;       //Rig Speedup 最高买到第 4 档
     //五档步长(毫秒),下标就是已购档数:第 0 档是初始的 1.0s 一格,买到第 4 档变 0.1s。
     const int RIG_SPEED_MS[SPEED_MAX + 1] = {1000, 750, 500, 250, 100};
-    //矿格按所属矿池上色:色相跟着 id 循环,同一片矿脉同色。
-    const BYTE POOL_COLORS[7] = {
-        FOREGROUND_RED | FOREGROUND_INTENSITY,
-        FOREGROUND_GREEN | FOREGROUND_INTENSITY,
-        FOREGROUND_BLUE | FOREGROUND_INTENSITY,
-        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY,
-        FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,
-        FOREGROUND_BLUE | FOREGROUND_RED | FOREGROUND_INTENSITY,
-        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,
+    //三类矿脉各有一套颜色:满格用亮色,挖过但没挖空的格子换成同色系的暗色。
+    //控制台只有 16 色,铜的"橙"用亮黄近似,锡的"青灰"用亮青近似。
+    const BYTE ORE_COLORS[ORE_KIND_COUNT] = {
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE,        //铁:浅灰
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY,   //铜:橙
+        FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,  //锡:青灰
     };
-    const int POOL_COLOR_COUNT = 7;
+    const BYTE ORE_COLORS_DIM[ORE_KIND_COUNT] = {
+        FOREGROUND_INTENSITY,                                       //铁:深灰
+        FOREGROUND_RED | FOREGROUND_GREEN,                          //铜:暗黄
+        FOREGROUND_GREEN | FOREGROUND_BLUE,                         //锡:暗青
+    };
     const BYTE PLAYER_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
-    const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
+    const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
     //商品表驱动商店的画面和购买:加新商品只需在这里多填一行,选择、渲染、扣费、上限都跟着走。
     //后面两项是留出来的空位(available=false),给后续 commit 填实际商品。
     vector<ShopItem> shopItems = {
@@ -450,11 +451,12 @@ int main(){
                         }
                         const uint16_t poolId = world.poolAt(mapX, mapY);
                         if(poolId != 0){
-                            //矿格按所属矿池上色:同一片矿脉同色,相邻的池由色相循环区分。
-                            //挖过但没挖空的格子去掉高亮,颜色变暗,一眼能看出这格被啃过。
-                            BYTE color = POOL_COLORS[(poolId - 1) % POOL_COLOR_COUNT];
-                            if(world.oreLeftAt(mapX, mapY) < ORE_PER_CELL)
-                                color = static_cast<BYTE>(color & ~FOREGROUND_INTENSITY);
+                            //颜色跟着矿脉类型走:铁灰、铜橙、锡青灰。
+                            //挖过但没挖空的格子换成同色系的暗色,一眼能看出这格被啃过。
+                            const int kind = static_cast<int>(world.pools[poolId - 1].kind);
+                            const BYTE color = world.oreLeftAt(mapX, mapY) == ORE_PER_CELL
+                                                   ? ORE_COLORS[kind]
+                                                   : ORE_COLORS_DIM[kind];
                             setCell(column, row, '#', color);
                         }
                         else{
@@ -522,9 +524,14 @@ int main(){
                         //种子显示出来才谈得上复现:嫌图太密/太稀时,把这个数报过来就够,不用截图。
                         writeText(column, listRow, "seed:" + to_string(world.seed), infoWidth);
                         listRow++;
+                        int kindCount[ORE_KIND_COUNT] = {0, 0, 0};
+                        for(const OrePool& pool : world.pools)
+                            kindCount[static_cast<int>(pool.kind)]++;
                         writeText(column, listRow,
-                                  "pools:" + to_string(world.pools.size()) + "  rigs:" +
-                                  to_string(world.rigs.size()), infoWidth);
+                                  "pools:" + to_string(world.pools.size()) +
+                                  " Fe/Cu/Sn:" + to_string(kindCount[0]) + "/" +
+                                  to_string(kindCount[1]) + "/" + to_string(kindCount[2]) +
+                                  " rigs:" + to_string(world.rigs.size()), infoWidth);
                         listRow++;
                         writeText(column, listRow, "regrow:+1#/5min  cell:100#", infoWidth);
                         listRow++;

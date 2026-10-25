@@ -88,6 +88,10 @@ int main(){
         check("same seed gives identical per-cell data", a.oreLeft == b.oreLeft);
         check("and the same remaining count", a.remainResource == b.remainResource);
         check("and the same number of pools", a.pools.size() == b.pools.size());
+        bool kindsMatch = a.pools.size() == b.pools.size();
+        for(size_t i = 0; i < a.pools.size() && kindsMatch; i++)
+            if(a.pools[i].kind != b.pools[i].kind) kindsMatch = false;
+        check("same seed gives identical pool kinds", kindsMatch);
         check("seed is recorded on the object", a.seed == 12345u);
 
         World c;
@@ -151,6 +155,7 @@ int main(){
                   w.seed == originalSeed && w.rng == originalRng);
             check("pools stay unchanged", w.pools.size() == originalPools.size());
             check("pool contents stay unchanged",
+                  w.pools.front().kind == originalPools.front().kind &&
                   w.pools.front().remaining == originalPools.front().remaining &&
                   w.pools.front().capacity == originalPools.front().capacity &&
                   w.pools.front().nextRegrowAt == originalPools.front().nextRegrowAt);
@@ -292,6 +297,54 @@ int main(){
         pool.nextRegrowAt = now;
         check("a partially mined cell is not topped up", w.updatePools(now) == 0);
         check("its remaining data is untouched", w.oreLeftAt(x, y) == ORE_PER_CELL - 1);
+    }
+
+    printf("\n=== three ore kinds: iron, copper, tin ===\n");
+    {
+        check("there are exactly three kinds", ORE_KIND_COUNT == 3);
+
+        World w;
+        w.init(512, 512, 6, 42u);
+        int counts[ORE_KIND_COUNT] = {0, 0, 0};
+        bool valid = true;
+        for(const OrePool& pool : w.pools){
+            const int kind = static_cast<int>(pool.kind);
+            if(kind < 0 || kind >= ORE_KIND_COUNT) valid = false;
+            else counts[kind]++;
+        }
+        check("every pool has a valid kind", valid);
+        check("all three kinds appear on the default map",
+              counts[0] > 0 && counts[1] > 0 && counts[2] > 0);
+        int smallest = counts[0];
+        int largest = counts[0];
+        for(int i = 1; i < ORE_KIND_COUNT; i++){
+            if(counts[i] < smallest) smallest = counts[i];
+            if(counts[i] > largest) largest = counts[i];
+        }
+        check("the three kinds are split evenly", largest - smallest <= 1);
+        printf("  INFO  default 512x512: Fe=%d Cu=%d Sn=%d (%zu pools)\n",
+               counts[0], counts[1], counts[2], w.pools.size());
+
+        //重铺不改类型:id 不变,类型也不变。
+        OreKind before[8];
+        const size_t sample = w.pools.size() < 8 ? w.pools.size() : 8;
+        for(size_t i = 0; i < sample; i++)
+            before[i] = w.pools[i].kind;
+        w.relayout();
+        bool stable = true;
+        for(size_t i = 0; i < sample; i++)
+            if(w.pools[i].kind != before[i]) stable = false;
+        check("relayout keeps the kind assignment stable", stable);
+
+        //密度前缀:低密度的池在更高密度下仍是同样的 id 和类型。
+        World low, high;
+        low.init(64, 32, 30, 12345u);
+        high.init(64, 32, 60, 12345u);
+        bool prefixKinds = low.pools.size() <= high.pools.size();
+        for(size_t i = 0; i < low.pools.size() && prefixKinds; i++)
+            if(low.pools[i].kind != high.pools[i].kind || low.pools[i].id != high.pools[i].id)
+                prefixKinds = false;
+        check("raising density keeps the prefix pools' kinds", prefixKinds);
     }
 
     printf("\n=== density still behaves statistically ===\n");

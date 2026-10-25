@@ -20,10 +20,21 @@ inline constexpr unsigned long long ORE_REGROW_MS = 300ull * 1000ull;
 //一个矿格能保存的数据量:每次采集/矿机出手扣 1,扣到 0 这格才消失。
 inline constexpr int ORE_PER_CELL = 100;
 
+//矿脉类型。一个池从头到尾只属于一种矿;目前类型只决定颜色,
+//三类的数据量/单价都一样,后续要做冶炼或分仓时再从这里接。
+enum class OreKind : uint8_t{
+    Iron = 0,     //灰
+    Copper = 1,   //橙
+    Tin = 2,      //青灰
+};
+
+inline constexpr int ORE_KIND_COUNT = 3;
+
 //一片矿脉。cells 里存的就是它的 id(1..N),0 表示空格。
 //足迹单独留一份:重生时按足迹回填,不用全图扫描——这正是旧 refillIfSparse 的替换点。
 struct OrePool{
     uint16_t id;
+    OreKind kind;                     //矿脉类型(铁/铜/锡),决定颜色
     int cx;
     int cy;
     int capacity;                     //数据总容量 = 足迹格数 * ORE_PER_CELL
