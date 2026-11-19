@@ -8,14 +8,15 @@
             "name": "(gdb) 启动",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/a.exe",
+            "program": "${workspaceFolder}/PYS.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
+            "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": true,
             "MIMode": "gdb",
-            "miDebuggerPath": "/path/to/gdb",
+            // 不写 miDebuggerPath,让 cpptools 按 PATH 查找 gdb;换机器/换工具链不用改这里。
+            // 前提是本机 PATH 里有 gdb.exe(本仓库的构建环境已把 WinLibs 的 mingw64\bin 加进系统 PATH)。
             "setupCommands": [
                 {
                     "description": "为 gdb 启用整齐打印",
