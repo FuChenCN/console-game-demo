@@ -30,6 +30,8 @@ constexpr int DIR_Y[4] = {0, 0, -1, 1};
 void World::init(int w, int h, int rate, uint32_t s){
     if(w <= 0 || h <= 0)
         throw std::invalid_argument("world dimensions must be positive");
+    if(static_cast<long long>(w) * h > std::numeric_limits<int>::max() / ORE_PER_CELL)
+        throw std::invalid_argument("world is too large for ore counters");
     width = w;
     height = h;
     resourceRate = rate;
@@ -49,17 +51,14 @@ void World::relayout(){
     rigs.clear();
 
     const long long area = static_cast<long long>(width) * static_cast<long long>(height);
-    long long target = area * resourceRate / 100;
-    if(target > area)
-        target = area;
-    if(target <= 0)
+    const long long target = area * std::clamp(resourceRate, 0, 100) / 100;
+    if(target == 0)
         return;
     //target 数的是格子;remainResource 数的是数据量(每格 100),比较时换算一次。
     const long long targetUnits = target * ORE_PER_CELL;
 
-    //候选矿脉:先按种子生成一批"中心 + 目标格数",再按密度激活前 N 条。
-    //只生长激活的那几条,且只和已经激活的池抢地——所以提高密度时,
-    //低密度那张图的每一格都原样留在高密度图里(前缀性质)。
+    //候选顺序和生长顺序都与密度无关,只在铺到实际目标格数时停止。
+    //这样提高密度时,低密度图的矿格和池 id 都是同一序列的前缀。
     const int candidateCount = static_cast<int>(std::max(64LL, area / 40));
     std::vector<PoolCandidate> candidates;
     candidates.reserve(static_cast<size_t>(candidateCount));
@@ -69,16 +68,10 @@ void World::relayout(){
     for(int i = 0; i < candidateCount; i++)
         candidates.push_back(PoolCandidate{pickX(rng), pickY(rng), pickSize(rng)});
 
-    long long planned = 0;
-    int active = 0;
-    while(active < static_cast<int>(candidates.size()) && planned < target){
-        planned += candidates[active].size;
-        active++;
-    }
-
     std::uniform_int_distribution<int> pickDir(0, 3);
-    for(int i = 0; i < active && remainResource < targetUnits; i++){
-        const PoolCandidate& candidate = candidates[static_cast<size_t>(i)];
+    for(const PoolCandidate& candidate : candidates){
+        if(remainResource >= targetUnits || pools.size() >= std::numeric_limits<uint16_t>::max())
+            break;
 
         //中心被别的池占了就沿方框向外找最近的空格;找不到就跳过这条候选。
         uint32_t seedCell = 0;
@@ -103,13 +96,11 @@ void World::relayout(){
         if(!placed)
             continue;
         //id 是 1 基的,cells 里 0 专门留给空格。
-        if(pools.size() >= 65535u)
-            break;
         const uint16_t id = static_cast<uint16_t>(pools.size() + 1);
 
         OrePool pool;
         pool.id = id;
-        //类型按 id 均分:同一张图三类数量基本相等,且密度变化时前缀池的类型不变。
+        //类型按 id 均分,密度变化时前缀池的类型不变。
         pool.kind = static_cast<OreKind>((id - 1) % ORE_KIND_COUNT);
         pool.cx = static_cast<int>(seedCell % static_cast<uint32_t>(width));
         pool.cy = static_cast<int>(seedCell / static_cast<uint32_t>(width));
@@ -125,6 +116,7 @@ void World::relayout(){
         //随机游走长团块:每次从已有格子里挑一格,往随机方向扩一格。
         int fails = 0;
         while(static_cast<int>(pool.cells.size()) < candidate.size &&
+              remainResource < targetUnits &&
               fails < candidate.size * 4){
             std::uniform_int_distribution<size_t> pickCell(0, pool.cells.size() - 1);
             const uint32_t base = pool.cells[pickCell(rng)];
@@ -148,8 +140,6 @@ void World::relayout(){
             remainResource += ORE_PER_CELL;
             fails = 0;
         }
-        if(pool.cells.empty())
-            continue;
         pool.capacity = static_cast<int>(pool.cells.size()) * ORE_PER_CELL;
         pool.remaining = pool.capacity;
         pools.push_back(std::move(pool));

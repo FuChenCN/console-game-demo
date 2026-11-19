@@ -101,7 +101,8 @@ struct World{
     std::minstd_rand rng;                          //只允许由下面的方法使用,外部别碰
 
     //按指定规模和种子分配网格并铺图。开局、以及以后"选完世界规模"都走这里。
-    //宽高必须为正数;否则抛出 std::invalid_argument,原世界(包括随机源)保持不变。
+    //宽高必须为正数,且满图资源量必须能用 int 表示。
+    //尺寸不合法时抛出 std::invalid_argument,原世界(包括随机源)保持不变。
     void init(int w, int h, int rate, uint32_t s);
 
     //从保存的种子重播,按当前密度重铺整张图并重建矿池。

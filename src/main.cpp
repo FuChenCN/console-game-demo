@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "platform/console_ctrl.h"   //退出标志与 Ctrl+C/Ctrl+Break 回调
-#include "game/world.h"              //资源网格、密度与机器人的推进规则
+#include "game/world.h"              //矿脉、矿池和矿机
 #include "content/title_assets.h"    //标题页的字模、色板与节奏
 
 using namespace std;
@@ -292,14 +292,14 @@ int main(){
                     invCoal += 10000;
                     debugActed = true;
                 }
-                if(code == 'T'){
+                if(code == 'T' && world.resourceRate < 100){
                     //密度调完立刻重铺整张图,否则要等资源自己见底才看得出效果。
-                    world.resourceRate = min(100, world.resourceRate + 1);
+                    world.resourceRate++;
                     world.relayout();
                     debugActed = true;
                 }
-                if(code == 'Y'){
-                    world.resourceRate = max(0, world.resourceRate - 1);
+                if(code == 'Y' && world.resourceRate > 0){
+                    world.resourceRate--;
                     world.relayout();
                     debugActed = true;
                 }
@@ -337,12 +337,15 @@ int main(){
                     if(placed >= owned){
                         playNotice = "No rig: craft one in the bag";
                     }
+                    else if(!world.hasResource(x, y)){
+                        playNotice = "Stand on ore to place a rig";
+                    }
                     else if(world.placeRig(x, y, now, stepMs)){
                         //放置不结算资源:矿机占住这一格,落地后自己从脚下开始挖。
                         playNotice = "Rig placed, spare:" + to_string(owned - placed - 1);
                     }
                     else{
-                        playNotice = "Stand on # to place a rig";
+                        playNotice = "There is already a rig here";
                     }
                     playNoticeUntil = now + 2500;
                     uiActed = true;
@@ -519,41 +522,33 @@ int main(){
                     int column = viewW * CELL_COLS + 1;
                     int infoWidth = width - column;
                     writeText(column, 0, "PYS", infoWidth);
-                    writeText(column, 2, position, infoWidth);
+                    writeText(column, 1, position, infoWidth);
                     //库存只放在背包页,信息面板只留地图状态和运行状态。
-                    writeText(column, 3, "Remaining:" + to_string(world.remainResource), infoWidth);
-                    writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
-                    writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
-                    writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
-                    writeText(column, 10, "Right Bag  Enter Rig  Q Quit", infoWidth);
-                    //第 11 行留给放置反馈和备用矿机数量,不占用下面的 Running 段。
+                    writeText(column, 2, "Remaining:" + to_string(world.remainResource), infoWidth);
+                    writeText(column, 3, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
+                    writeText(column, 4, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
+                    writeText(column, 6, "WASD Move  E/Space Collect", infoWidth);
+                    writeText(column, 7, "Right Bag  Enter Rig  Q Quit", infoWidth);
                     if(!playNotice.empty())
-                        writeText(column, 11, playNotice, infoWidth);
+                        writeText(column, 8, playNotice, infoWidth);
                     else
-                        writeText(column, 11,
+                        writeText(column, 8,
                                   "Rigs spare:" + to_string(rigsOwned -
                                                             static_cast<int>(world.rigs.size())),
                                   infoWidth);
-                    //正在运作的东西标在侧栏:矿机数量、当前速度档。
-                    //Rig Speedup 不给矿机单独占行,而是体现在下面那个步长上。
-                    //这几行排在第 12 行之后,终端高度刚好卡在最小值 12 时会画到画面外。
-                    int listRow = 12;
-                    writeText(column, listRow, "Running:", infoWidth);
-                    listRow++;
-                    writeText(column, listRow,
+                    writeText(column, 9,
                               "Rigs:" + to_string(world.rigs.size()) + "/" +
                               to_string(rigsOwned), infoWidth);
-                    listRow++;
                     //步长按已购档位取,格式化成两位小数:1000ms 显示 1.00s,100ms 显示 0.10s。
                     char speedText[16];
                     snprintf(speedText, sizeof(speedText), "%.2fs",
                              RIG_SPEED_MS[speedLevel] / 1000.0);
-                    writeText(column, listRow,
+                    writeText(column, 10,
                               string("Speed:Lv") + to_string(speedLevel) + " " +
                               speedText + "/step", infoWidth);
                     //调试状态标在侧栏,可用键也一并写出来,免得回头翻代码。
                     if(debugOn){
-                        listRow++;
+                        int listRow = 11;
                         writeText(column, listRow, "DEBUG ON", infoWidth);
                         listRow++;
                         writeText(column, listRow, "# density:" + to_string(world.resourceRate) + "%", infoWidth);
@@ -666,7 +661,7 @@ int main(){
                     writeText(craftColumn, base + 11, "Left Game   Q Quit", craftWidth);
                 }
                 else{
-                    writeText(craftColumn, base + 4, "Up/Down Craft  Left  Q Quit", craftWidth);
+                    writeText(craftColumn, base + 4, "W/S Pick Enter Craft Left Q Quit", craftWidth);
                 }
             }
         }

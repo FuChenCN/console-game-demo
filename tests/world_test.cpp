@@ -146,7 +146,7 @@ int main(){
         const auto originalSeed = w.seed;
         const auto originalRng = w.rng;
         const int originalRemain = w.remainResource;
-        const int invalidSizes[][2] = {{0, 4}, {8, 0}, {-1, 4}, {8, -1}};
+        const int invalidSizes[][2] = {{0, 4}, {8, 0}, {-1, 4}, {8, -1}, {5000, 5000}};
         for(const auto& size : invalidSizes){
             printf("  input: %d x %d\n", size[0], size[1]);
             bool rejected = false;
@@ -156,7 +156,7 @@ int main(){
             catch(const std::invalid_argument&){
                 rejected = true;
             }
-            check("nonpositive size throws invalid_argument", rejected);
+            check("invalid size throws invalid_argument", rejected);
             check("dimensions and grid stay unchanged",
                   w.width == 8 && w.height == 4 && w.cells == originalCells);
             check("per-cell data stays unchanged", w.oreLeft == originalOre);
@@ -396,7 +396,7 @@ int main(){
         }
     }
 
-    printf("\n=== density still behaves statistically ===\n");
+    printf("\n=== density meets the target and preserves pool ids ===\n");
     {
         World w;
         w.init(64, 64, 100, 1u);
@@ -406,11 +406,23 @@ int main(){
         w.relayout();
         check("rate=0 empties every cell", w.remainResource == 0);
         check("rate=0 leaves no pools", w.pools.empty());
-        w.resourceRate = 30;
+        w.resourceRate = 1;
         w.relayout();
-        double actual = countOreCells(w) * 100.0 / (w.width * w.height);
-        printf("  INFO  rate=30%% measured %.2f%% of cells (fixed seed, so this number is stable)\n", actual);
-        check("rate=30% lands in a sane band", actual > 25.0 && actual < 35.0);
+        check("rate=1 stops at the target even inside a pool", countOreCells(w) == 64 * 64 / 100);
+        w.resourceRate = 21;
+        w.relayout();
+        const auto lowDensity = w.cells;
+        w.resourceRate = 22;
+        w.relayout();
+        bool samePools = true;
+        for(size_t i = 0; i < lowDensity.size(); i++){
+            if(lowDensity[i] != 0 && lowDensity[i] != w.cells[i]){
+                samePools = false;
+                break;
+            }
+        }
+        check("raising density from 21% to 22% preserves existing pool ids", samePools);
+        check("rate=22 stops at the actual target", countOreCells(w) == 64 * 64 * 22 / 100);
         check("every filled cell carries 100 units", w.remainResource == countOreCells(w) * ORE_PER_CELL);
         check("remain equals the sum of pool remaining", sumRemaining(w) == w.remainResource);
     }
