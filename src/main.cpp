@@ -14,8 +14,9 @@
 
 #include "platform/console_ctrl.h"   //退出标志与 Ctrl+C/Ctrl+Break 回调
 #include "platform/launch_args.h"    //命令行与环境变量里的地图尺寸、种子
-#include "game/types.h"              //商品条目与机器人
-#include "game/world.h"              //资源网格、密度与机器人的推进规则
+#include "game/types.h"              //商品条目、矿脉与矿机
+#include "game/world.h"              //资源网格、矿机放置与取矿规则
+#include "content/miner_assets.h"    //矿机字模与三档状态色
 #include "content/title_assets.h"    //标题页的字模、色板与节奏
 
 using namespace std;
@@ -65,7 +66,7 @@ int main(int argc, char* argv[]){
     CONSOLE_CURSOR_INFO hiddenCursor = {1, FALSE};
     SetConsoleCursorInfo(hConsole, &hiddenCursor);
 
-    //世界状态已收进 game/world.h:网格、密度、剩余量、机器人。
+    //世界状态已收进 game/world.h:网格、密度、剩余量、矿机。
     World world;
     //种子用于重建初始分布并显示在调试面板;存档还要记录运行期变化和随机引擎状态。
     //没写 --seed / PYS_SEED 时,种子是启动那一刻的时钟值。
@@ -164,24 +165,21 @@ int main(int argc, char* argv[]){
     int scene = 2;
     int titlePhase = 0;                                        //当前颜色相位
     unsigned long long titleDeadline = GetTickCount64();       //下次推相位的时刻
-    const int SHOP_ROBOT = 0;      //商品表里只有这一行会生成跑动单位
-    const int SHOP_SPEEDUP = 1;    //这一行不改数量上限,而是给全体机器人提速
-    const int SPEED_MAX = 4;       //Bot Speedup 最高买到第 4 档
-    //五档步长(毫秒),下标就是已购档数:第 0 档是初始的 1.0s 一格,买到第 4 档变 0.1s。
-    const int BOT_SPEED_MS[SPEED_MAX + 1] = {1000, 750, 500, 250, 100};
+    const int SHOP_MINER = 0;      //这一行的 owned 是"库存":买了还没放下的台数
+    const int SHOP_SPEEDUP = 1;    //这一行不限数量,改的是所有矿机的取矿节拍
+    //五档节拍表和 SPEED_MAX 都在 game/world.h——那边才是拿它推进节拍的地方。
     //商品表驱动商店的画面和购买:加新商品只需在这里多填一行,选择、渲染、扣费、上限都跟着走。
     //后面两项是留出来的空位(available=false),给后续 commit 填实际商品。
     vector<ShopItem> shopItems = {
-        {"Auto Robot", 100, 0, true, world.height},   //一行只能站一个,上限就是地图行数(改成放置式矿机后替换掉)
-        {"Bot Speedup", 1000, 0, true, SPEED_MAX},//五档升级,买满第 4 档到顶
+        {"Auto Miner", 100, 0, true, 0},   //矿机数量不设上限:瓶颈在矿脉面积和缓存,不在这里
+        {"Miner Speedup", 1000, 0, true, SPEED_MAX},//五档升级,买满第 4 档到顶
         {"", 0, 0, false, 0},
         {"", 0, 0, false, 0},
     };
-    int shopSelection = 0;                          //商店光标指向的商品下标
+    int shopSelection = 0;                             //商店光标指向的商品下标
     string shopNotice = "Pick an item, Enter to buy";  //商店底部反馈行
-    string probeNotice;                                //最近一次探测的结果,显示在侧栏
-    //机器人容器和迈步时刻都归 World 了;第一脚按初始档位排在开局一秒后。
-    world.botDeadline = GetTickCount64() + BOT_SPEED_MS[0];
+    string probeNotice;                                //最近一次探测的结果
+    string actionNotice;                               //放置 / 取货 / 拆除的结果提示
     //调试模式的开门短语。存大写,因为字母键的 wVirtualKeyCode 本身就是大写码,与 Shift 无关。
     const string DEBUG_PHRASE = "OWOISHERE";
     string debugBuffer;             //最近按下的几个字母,只留够匹配短语的长度
@@ -252,8 +250,10 @@ int main(int argc, char* argv[]){
         bool oreChanged = false;
         //商店里光标位置和反馈文字的变化,不属于上面那几个数值比较,单独用标志位记。
         bool shopChanged = false;
-        //机器人迈步也算状态变化,同样要上报给下面的 changed,否则画面不动。
-        bool botActed = false;
+        //矿机每拍都可能改缓存和矿脉余量,要上报给 changed,否则画面不动。
+        bool minerActed = false;
+        //放置 / 取货 / 拆除的提示文字变化本身也要触发重绘。
+        bool actionChanged = false;
         //调试操作(开启、发钱、改密度)同样要自己上报,不然侧栏不会刷新。
         bool debugActed = false;
         for(const auto& key : keys){
@@ -319,6 +319,63 @@ int main(int argc, char* argv[]){
                     probeNotice = found > 0 ? to_string(found) + " new vein" : "nothing here";
                     oreChanged = true;
                 }
+                if(code == 'G'){
+                    //放置:占地左上角取玩家脚下。库存不够就不必去问 World 为什么放不下。
+                    if(shopItems[SHOP_MINER].owned <= 0){
+                        actionNotice = "no miner in stock";
+                    }
+                    else{
+                        PlaceOutcome put = world.tryPlaceMiner(x, y);
+                        switch(put.result){
+                            case PlaceResult::placed:
+                                shopItems[SHOP_MINER].owned--;
+                                actionNotice = "miner placed";
+                                break;
+                            case PlaceResult::out_of_bounds:
+                                actionNotice = "no room at the edge";
+                                break;
+                            case PlaceResult::no_vein:
+                                actionNotice = "not on a vein";
+                                break;
+                            case PlaceResult::not_one_vein:
+                                actionNotice = "straddles two veins";
+                                break;
+                            case PlaceResult::undiscovered:
+                                actionNotice = "vein not probed";
+                                break;
+                            case PlaceResult::blocked:
+                                actionNotice = "space already taken";
+                                break;
+                        }
+                    }
+                    actionChanged = true;
+                }
+                if(code == 'R'){
+                    //取货:一次掏空缓存。取不到要分清"脚下没机器"和"机器是空的"。
+                    int got = world.retrieveAt(x, y);
+                    if(got > 0){
+                        resourceCount += got;
+                        actionNotice = "took " + to_string(got) + "#";
+                    }
+                    else
+                        actionNotice = world.minerAt(x, y) ? "cache empty" : "no miner here";
+                    actionChanged = true;
+                }
+                if(code == 'X'){
+                    //拆回:缓存里已挖到的先退回背包,免得手滑拆一次机器白丢一趟产量。
+                    int carried = 0;
+                    const Miner* target = world.minerAt(x, y);
+                    if(target)
+                        carried = target->buffer;
+                    if(world.removeMinerAt(x, y)){
+                        resourceCount += carried;
+                        shopItems[SHOP_MINER].owned++;
+                        actionNotice = carried > 0 ? "removed +" + to_string(carried) + "#" : "miner removed";
+                    }
+                    else
+                        actionNotice = "nothing to remove";
+                    actionChanged = true;
+                }
                 continue;
             }
             //商店场景:光标在商品表上移动,Enter 买下光标指向的那一项。
@@ -339,7 +396,7 @@ int main(int argc, char* argv[]){
                     shopNotice = "Empty slot: nothing to buy";
                 }
                 else if(item.cap > 0 && item.owned >= item.cap){
-                    //到顶就不再扣钱:机器人占满 32 行、升级买满第 4 档都走这里挡掉。
+                    //到顶就不再扣钱:Miner Speedup 买满第 4 档走这里挡掉。
                     shopNotice = string(item.name) + " is maxed out";
                 }
                 else if(resourceCount < item.price){
@@ -347,7 +404,7 @@ int main(int argc, char* argv[]){
                 }
                 else{
                     //扣款和加库存必须一起成功,所以前面三种情况都在上面被拦掉了。
-                    int paid = item.price;   //先记下成交价,Bot Speedup 会把挂牌价改掉
+                    int paid = item.price;   //先记下成交价,Miner Speedup 会把挂牌价改掉
                     resourceCount -= paid;
                     item.owned++;
                     //递档升级:买完一档把挂牌价翻倍,对应 1000 / 2000 / 4000 / 8000。
@@ -358,17 +415,12 @@ int main(int argc, char* argv[]){
                 shopChanged = true;
             }
         }
-        //机器人只在采集场景跑;切到商店时冻住,不会在看不见的地方偷偷吃资源。
-        //原来这里是两个同条件的 if,中间没有别的语句,合并成一个不改变语义。
+        //矿机只在采集场景推进;切到商店就冻住,不会在看不见的地方偷偷采。
         if(canPlay && scene == 0){
-            world.syncBots(shopItems[SHOP_ROBOT].owned);
-            //步长取当前升级档位,买到 Bot Speedup 后下一脚就按新间隔走。
-            BotStep step = world.advanceBots(GetTickCount64(),
-                                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned]);
-            //机器人吃掉的资源进背包:扣地图和减剩余量都在 World 里做完了,这里只加计数。
-            resourceCount += step.collected;
-            botActed = step.moved;
-            //这里不再"见底就补一波":矿脉是不可再生的池子,采空就整条消失。
+            //节拍取当前升级档位。矿机不移动,这一档改的是"多久取一次"。
+            //产出留在机器自己的缓存里、不进背包:"得有人来取"正是这套玩法的瓶颈所在。
+            minerActed = world.advanceMiners(GetTickCount64(),
+                                             MINER_SPEED_MS[shopItems[SHOP_SPEEDUP].owned]);
         }
         //标题页每 TITLE_STEPS_MS 推一次颜色相位;不在标题页就不推,免得白耗重绘。
         bool titleAnimated = false;
@@ -383,7 +435,7 @@ int main(int argc, char* argv[]){
         //少了 shopChanged,购买和移动光标都不会触发重绘:画面只认这里列出的状态变化。
         bool changed = resized || scene != oldScene || x != oldX || y != oldY ||
                        resourceCount != oldResourceCount || world.remainingUnits() != oldRemainResource ||
-                       shopChanged || botActed || debugActed || titleAnimated || oreChanged;
+                       shopChanged || minerActed || actionChanged || debugActed || titleAnimated || oreChanged;
         if(changed){
             fill(frame.begin(), frame.end(), blank);
             needsPresent = true;
@@ -451,17 +503,30 @@ int main(int argc, char* argv[]){
                         setCell(column, row, value);
                     }
                 }
-                //机器人盖在资源之上、玩家之下:它踩到的 # 被符号顶掉,但玩家 @ 优先,重叠时不画机器人。
-                for(const Bot& bot : world.bots){
-                    if(bot.x == x && bot.y == y)
+                //矿机是"贴在地上的标签":3x2 的格子里写下 miner,盖在矿格之上、玩家之下。
+                for(const Miner& m : world.miners){
+                    if(m.removed)
                         continue;
-                    int screenX = bot.x - cameraX;
-                    int screenY = bot.y - cameraY;
-                    //地图比可见区域大,跑出视口的机器人不画。
-                    if(screenX < 0 || screenX >= viewW || screenY < 0 || screenY >= viewH)
-                        continue;
-                    //吃到就是咬合的 =,没吃到按方向显示张口的 < 或 >。
-                    setCell(screenX, screenY, bot.justAte ? '=' : (bot.dir > 0 ? '<' : '>'));
+                    const Deposit* vein = world.findDeposit(m.depositId);
+                    //颜色优先级:满仓 > 脉枯 > 工作中。满仓优先,脉挖空了也显示黄色。
+                    BYTE paint = minerColor(m.buffer >= MINER_BUFFER,
+                                            vein == nullptr || vein->exhausted,
+                                            m.active);
+                    for(int r = 0; r < MINER_H; r++){
+                        for(int c = 0; c < MINER_W; c++){
+                            if(MINER_LABEL[r][c] == ' ')
+                                continue;
+                            int screenX = m.x + c - cameraX;
+                            int screenY = m.y + r - cameraY;
+                            //地图比可见区域大,滚出视野的部分不画。
+                            if(screenX < 0 || screenX >= viewW || screenY < 0 || screenY >= viewH)
+                                continue;
+                            //玩家站在机器上也照旧显示 @:人和机器重叠时优先看人。
+                            if(screenX + cameraX == x && screenY + cameraY == y)
+                                continue;
+                            setCell(screenX, screenY, MINER_LABEL[r][c], paint);
+                        }
+                    }
                 }
                 string position = "X:" + to_string(x) + " Y:" + to_string(y);
                 if(sidebar){
@@ -482,25 +547,40 @@ int main(int argc, char* argv[]){
                               infoWidth);
                     writeText(column, 6, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 7, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
-                    writeText(column, 9, "WASD Move  E/Space Collect", infoWidth);
-                    writeText(column, 10, "Right Shop  Q Quit", infoWidth);
-                    //探测提示和上一次的结果:没有反馈的按键会被当成坏了。
-                    writeText(column, 11, "V Probe  " + (probeNotice.empty() ? string("not yet") : probeNotice), infoWidth);
-                    //正在运作的东西标在侧栏。只有 Auto Robot 会产生跑动单位,
-                    //Bot Speedup 是全体提速,不单独占一行,而是体现在下面那个步长上。
+                    writeText(column, 9, "WASD Move  E/Space Take  V Probe", infoWidth);
+                    writeText(column, 10, "G Place  R Retrieve  X Remove", infoWidth);
+                    writeText(column, 11, "Right Shop  Q Quit", infoWidth);
+                    //侧栏标出正在跑的东西:台数按实际放置算,库存是买了还没放下的。
                     //这几行排在第 12 行之后,终端高度刚好卡在最小值 12 时会画到画面外。
                     int listRow = 12;
-                    writeText(column, listRow, "Running:", infoWidth);
+                    int placedCount = 0;
+                    for(const Miner& m : world.miners)
+                        if(!m.removed)
+                            placedCount++;
+                    writeText(column, listRow,
+                              "Miners:" + to_string(placedCount) + "  stock:" + to_string(shopItems[SHOP_MINER].owned),
+                              infoWidth);
                     listRow++;
-                    writeText(column, listRow, "Bots:" + to_string(world.bots.size()) + "/" + to_string(world.height), infoWidth);
-                    listRow++;
-                    //步长按已购档位取,格式化成两位小数:1000ms 显示 1.00s,100ms 显示 0.10s。
+                    //节拍按已购档位取,格式化成两位小数:500ms 显示 0.50s,50ms 显示 0.05s。
                     char speedText[16];
                     snprintf(speedText, sizeof(speedText), "%.2fs",
-                             BOT_SPEED_MS[shopItems[SHOP_SPEEDUP].owned] / 1000.0);
+                             MINER_SPEED_MS[shopItems[SHOP_SPEEDUP].owned] / 1000.0);
                     writeText(column, listRow,
                               string("Speed:Lv") + to_string(shopItems[SHOP_SPEEDUP].owned) + " " +
-                              speedText + "/step", infoWidth);
+                              speedText + "/take", infoWidth);
+                    listRow++;
+                    //脚下这台机器的缓存;不站在矿机上就是 -。
+                    const Miner* here = world.minerAt(x, y);
+                    writeText(column, listRow,
+                              here != nullptr
+                                  ? "Cache:" + to_string(here->buffer) + "/" + to_string(MINER_BUFFER) + "#"
+                                  : "Cache:-",
+                              infoWidth);
+                    listRow++;
+                    //最近一次按键的结果。操作键和探测共用一行,免得侧栏越拖越长。
+                    string lastWord = !actionNotice.empty() ? actionNotice
+                                  : (!probeNotice.empty() ? probeNotice : string("-"));
+                    writeText(column, listRow, "Last:" + lastWord, infoWidth);
                     //调试状态标在侧栏,可用键也一并写出来,免得回头翻代码。
                     if(debugOn){
                         listRow++;

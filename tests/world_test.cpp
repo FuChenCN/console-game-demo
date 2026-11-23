@@ -44,6 +44,31 @@ static int oreCellCountOfId(const World& w, int id){
     return n;
 }
 
+//这条脉当前还画得出多少个 #:池子每少 100# 就该少一格。
+static int visibleCellCountOfId(const World& w, int id){
+    int n = 0;
+    for(int row = 0; row < w.height; row++)
+        for(int col = 0; col < w.width; col++)
+            if(w.depositAt(col, row) == id && w.showsOre(col, row))
+                n++;
+    return n;
+}
+
+//这一格是否在原脉的外缘:贴地图边,或有一个四邻不属于这条脉。
+static bool onVeinRim(const World& w, int id, int x, int y){
+    const int dx[4] = {1, -1, 0, 0};
+    const int dy[4] = {0, 0, 1, -1};
+    for(int k = 0; k < 4; k++){
+        int nx = x + dx[k];
+        int ny = y + dy[k];
+        if(nx < 0 || nx >= w.width || ny < 0 || ny >= w.height)
+            return true;
+        if(w.depositAt(nx, ny) != id)
+            return true;
+    }
+    return false;
+}
+
 int main(){
     printf("=== storage and runtime size ===\n");
     {
@@ -54,9 +79,14 @@ int main(){
         check("runtime size honored", w.width == 48 && w.height == 24);
         check("nothing discovered at start",
               [&]{ for(const Deposit& d : w.deposits) if(d.discovered) return false; return true; }());
-        w.syncBots(1);
+        w.tryPlaceMiner(1, 1);
         w.init(48, 24, 8, 7u);
-        check("init clears bots", w.bots.empty());
+        check("init clears miners and their footprints", w.miners.empty() && w.machineCells.size() == 48 * 24);
+        bool footprintClean = true;
+        for(size_t i = 0; i < w.machineCells.size(); i++)
+            if(w.machineCells[i] != 0)
+                footprintClean = false;
+        check("init wipes every machine cell", footprintClean);
 
         World big;
         big.init(512, 512, 8, 7u);
@@ -131,16 +161,66 @@ int main(){
 
         //点亮的是整条脉,不是被碰到的那几格:格子只存归属,所以一次翻转即见全貌。
         const Deposit& d = *w.findDeposit(id);
-        int far = 0;
+        int litCells = 0;                       //注意别用 far/near 当变量名:windef.h 把它们定义成空宏
         for(int row = d.minY; row <= d.maxY; row++)
             for(int col = d.minX; col <= d.maxX; col++)
                 if(w.depositAt(col, row) == id && w.showsOre(col, row))
-                    far++;
-        check("one probe reveals the whole vein, not just the 3x3", far == d.cellCount);
+                    litCells++;
+        check("one probe reveals the whole vein, not just the 3x3", litCells == d.cellCount);
 
         World off;
         off.init(16, 16, 8, 3u);
         check("probing off the map is safe", off.probeAt(-50, -50) == 0);
+    }
+
+    printf("\n=== mining erodes the vein from the rim ===\n");
+    {
+        World w;
+        w.init(128, 128, 8, 42u);
+        int x = 0, y = 0, id = 0;
+        anyOreCell(w, x, y, id);
+        w.probeAt(x, y);
+        Deposit& d = *w.findDeposit(id);
+        const int total = d.total;
+
+        check("a full vein draws every cell", visibleCellCountOfId(w, id) == d.cellCount);
+
+        d.remaining = total - 100;
+        check("each full 100# hides exactly one #", visibleCellCountOfId(w, id) == d.cellCount - 1);
+        d.remaining = total - 199;
+        check("a partial hundred hides nothing extra", visibleCellCountOfId(w, id) == d.cellCount - 1);
+        d.remaining = total - 200;
+        check("two full hundreds hide two cells", visibleCellCountOfId(w, id) == d.cellCount - 2);
+
+        d.remaining = total - 100;
+        int hiddenX = -1, hiddenY = -1, hidden = 0;
+        for(int row = 0; row < w.height; row++)
+            for(int col = 0; col < w.width; col++)
+                if(w.depositAt(col, row) == id && !w.showsOre(col, row)){
+                    hiddenX = col;
+                    hiddenY = row;
+                    hidden++;
+                }
+        check("exactly one cell is hidden after 100#", hidden == 1);
+        check("the first cell to vanish is on the rim",
+              hidden == 1 && onVeinRim(w, id, hiddenX, hiddenY));
+
+        d.remaining = 1;
+        check("the last unit leaves exactly one #", visibleCellCountOfId(w, id) == 1);
+
+        //同 seed 的剥落顺序必须可复现,不能带随机设备状态。
+        World twin;
+        twin.init(128, 128, 8, 42u);
+        twin.probeAt(x, y);                       //不探测的话整条脉不会画出来,比较没有意义
+        twin.findDeposit(id)->remaining = total - 300;
+        d.remaining = total - 300;
+        bool samePattern = true;
+        for(int row = 0; row < w.height && samePattern; row++)
+            for(int col = 0; col < w.width && samePattern; col++)
+                if(w.depositAt(col, row) == id &&
+                   w.showsOre(col, row) != twin.showsOre(col, row))
+                    samePattern = false;
+        check("the same seed erodes the same cells", samePattern);
     }
 
     printf("\n=== the pool is the single source of truth ===\n");
@@ -174,7 +254,7 @@ int main(){
         check("remainingUnits is not a cell count any more", sum.remainingUnits() > oreCellCount(sum));
     }
 
-    printf("\n=== hand mining and bots draw from the same pool ===\n");
+    printf("\n=== hand mining and miners draw from the same pool ===\n");
     {
         World w;
         w.init(128, 128, 8, 42u);
@@ -195,65 +275,123 @@ int main(){
         check("a nearly empty vein caps the player's take", w.playerTake(x, y) <= 2);
         check("and the pool never goes negative", d.remaining >= 0);
 
-        World botWorld;
-        botWorld.init(64, 8, 30, 11u);              //高覆盖率保证机器人那条行上有矿
-        int bx = 0, by = 0, bid = 0;
-        bool ore = false;
-        for(int row = 0; row < botWorld.height && !ore; row++)
-            for(int col = 0; col < botWorld.width && !ore; col++){
-                int found = botWorld.depositAt(col, row);
-                if(found != NO_DEPOSIT){ bx = col; by = row; bid = found; ore = true; }
+        //矿机:产出留在缓存里,不进玩家背包——这是"得有人来取"这条玩法的前提。
+        World mw;
+        mw.init(64, 8, 30, 11u);              //覆盖率高,总有能塞下 3x2 的脉
+        int mx = 0, my = 0, mid = 0, veinId = 0;
+        bool foundSpot = false;
+        for(int row = 0; row + MINER_H <= mw.height && !foundSpot; row++){
+            for(int col = 0; col + MINER_W <= mw.width && !foundSpot; col++){
+                mw.probeAt(col, row);                              //探一下,让脚下这条脉可见
+                PlaceOutcome put = mw.tryPlaceMiner(col, row);
+                if(put.result == PlaceResult::placed){
+                    mx = col; my = row;
+                    mid = put.minerId;
+                    veinId = mw.depositAt(col, row);   //矿机 id 和矿脉 id 是两套序号,不能混用
+                    foundSpot = true;
+                }
             }
-        check("found ore for the bot test", ore);
-        botWorld.probeAt(bx, by);
-        botWorld.syncBots(1);
-        //机器人是"先走一格、再判定脚下",所以要摆在目标格的前一格。
-        //目标恰好在最左列时,改成从右边接近,免得撞上左墙分支。
-        botWorld.bots[0].y = by;
-        if(bx > 0){
-            botWorld.bots[0].x = bx - 1;
-            botWorld.bots[0].dir = 1;
         }
-        else{
-            botWorld.bots[0].x = bx + 1;
-            botWorld.bots[0].dir = -1;
+        check("found a legal spot to place a miner", foundSpot);
+        if(foundSpot){
+            bool footprint = true;
+            for(int r = 0; r < MINER_H; r++)
+                for(int c = 0; c < MINER_W; c++)
+                    if(mw.machineCells[static_cast<size_t>(my + r) * mw.width + mx + c] != mid)
+                        footprint = false;
+            check("all six cells point at the miner", footprint);
+            check("and the machine reports itself", mw.minerAt(mx, my) != nullptr);
+            check("placing the same spot again is refused",
+                  mw.tryPlaceMiner(mx, my).result == PlaceResult::blocked);
+            check("a spot overlapping it is refused too",
+                  mw.tryPlaceMiner(mx + 1, my).result == PlaceResult::blocked);
+
+            Deposit* vein = mw.findDeposit(veinId);
+            check("the miner sits on a real vein", vein != nullptr);
+            if(vein != nullptr){
+                const int poolBefore = vein->remaining;
+                mw.minerDeadline = 0;
+                check("one tick moves ore from the pool into the cache", mw.advanceMiners(1000, 1000));
+                Miner* m = mw.minerAt(mx, my);
+                check("cache holds exactly MINER_TAKE", m != nullptr && m->buffer == MINER_TAKE);
+                check("the vein lost exactly what the cache gained",
+                      poolBefore - vein->remaining == MINER_TAKE);
+
+                int drained = 0;
+                while(m->buffer < MINER_BUFFER && drained++ < MINER_BUFFER + 5)
+                    mw.advanceMiners(2000ULL + drained * 1000ULL, 1000);
+                check("the cache fills up to its cap and not beyond", m->buffer == MINER_BUFFER);
+                check("a full machine goes idle", m->active == false);
+                const int whileIdle = vein->remaining;
+                mw.advanceMiners(90000, 1000);
+                check("an idle machine stops drawing from the vein", vein->remaining == whileIdle);
+
+                check("retrieving hands over the whole cache", mw.retrieveAt(mx, my) == MINER_BUFFER);
+                check("cache is empty afterwards", m->buffer == 0);
+                check("and it resumes working", m->active == true);
+                check("retrieving an empty cache gives nothing", mw.retrieveAt(mx, my) == 0);
+
+                //脉还活着时拆一次:占地立刻腾空,槽位和 id 应被下一次放置复用。
+                check("removing a working miner succeeds", mw.removeMinerAt(mx, my));
+                check("the footprint is freed", mw.minerAt(mx, my) == nullptr);
+                PlaceOutcome again = mw.tryPlaceMiner(mx, my);
+                check("and the slot is reused, keeping ids stable",
+                      again.result == PlaceResult::placed && again.minerId == mid);
+                Miner* replacement = mw.minerAt(mx, my);
+                check("the replacement starts empty", replacement != nullptr && replacement->buffer == 0);
+
+                //采空整条脉:机器该停下来,并且是被识别为"没料"而不是崩掉。
+                vein->remaining = 1;
+                mw.advanceMiners(100000, 1000);
+                mw.advanceMiners(101000, 1000);
+                check("the vein runs dry", vein->exhausted == true);
+                check("the miner keeps standing there but goes idle",
+                      replacement != nullptr && replacement->active == false);
+                const int cached = replacement != nullptr ? replacement->buffer : 0;
+                check("the idle machine still holds what it mined", cached > 0);
+                check("removing it works even on an exhausted vein", mw.removeMinerAt(mx, my));
+                check("an exhausted footprint cannot be re-used",
+                      mw.tryPlaceMiner(mx, my).result == PlaceResult::no_vein);
+            }
         }
-        botWorld.botDeadline = 0;
-        const int before = botWorld.findDeposit(bid)->remaining;
-        BotStep step = botWorld.advanceBots(1000, 1000);
-        check("a bot that steps onto ore reports it", step.moved && botWorld.bots[0].justAte == true);
-        check("the bot takes exactly BOT_TAKE from the pool",
-              before - botWorld.findDeposit(bid)->remaining == BOT_TAKE);
-        check("collected count matches", step.collected == 1);
     }
 
-    printf("\n=== timing gate and walls still use runtime size ===\n");
+    printf("\n=== timing gate and placement guards ===\n");
     {
         World w;
-        w.init(40, 8, 0, 1u);
-        w.syncBots(1);
-        w.botDeadline = 1000;
-        BotStep early = w.advanceBots(999, 1000);
-        check("before deadline: no move", early.moved == false && w.bots[0].x == 1);
-        BotStep onTime = w.advanceBots(1000, 1000);
-        check("at deadline: one cell", onTime.moved && w.bots[0].x == 2);
-        check("next deadline rescheduled", w.botDeadline == 2000);
+        w.init(64, 8, 30, 3u);
+        w.minerDeadline = 5000;
+        check("before the deadline nothing advances", w.advanceMiners(4999, 1000) == false);
+        check("and the deadline is left alone", w.minerDeadline == 5000);
 
-        w.bots[0].x = w.width - 2;
-        w.advanceBots(2000, 1000);
-        check("clamps at the right wall", w.bots[0].x == w.width - 1);
-        check("faces left", w.bots[0].dir == -1);
-        w.bots[0].x = 1;
-        w.bots[0].dir = -1;
-        w.advanceBots(3000, 1000);
-        check("clamps at the left wall", w.bots[0].x == 0);
-        check("faces right again", w.bots[0].dir == 1);
+        //越界、无脉、跨脉三种放不下的情况都要能区分开,提示才写得出人话。
+        check("placement off the map is refused", w.tryPlaceMiner(-1, 0).result == PlaceResult::out_of_bounds);
+        check("placement at the far edge is refused",
+              w.tryPlaceMiner(w.width - 1, 0).result == PlaceResult::out_of_bounds);
+        check("plain ground refuses", w.tryPlaceMiner(0, 0).result == PlaceResult::no_vein ||
+                                    w.tryPlaceMiner(0, 0).result == PlaceResult::undiscovered);
 
-        w.syncBots(w.height);
-        bool rows = true;
-        for(int row = 0; row < w.height; row++)
-            if(w.bots[row].y != row) rows = false;
-        check("one bot per row starting at y=0", w.bots.size() >= static_cast<size_t>(w.height) && rows);
+        //未探明的脉即使几何合适也不能放。
+        int hiddenX = -1, hiddenY = -1, hiddenId = 0;
+        for(int row = 0; row + MINER_H <= w.height && hiddenX < 0; row++)
+            for(int col = 0; col + MINER_W <= w.width && hiddenX < 0; col++){
+                int id = w.depositAt(col, row);
+                if(id != NO_DEPOSIT && !w.findDeposit(id)->discovered){
+                    bool sameVein = true;
+                    for(int r = 0; r < MINER_H && sameVein; r++)
+                        for(int c = 0; c < MINER_W && sameVein; c++)
+                            if(w.depositAt(col + c, row + r) != id) sameVein = false;
+                    if(sameVein){ hiddenX = col; hiddenY = row; hiddenId = id; }
+                }
+            }
+        if(hiddenX >= 0){
+            check("an undiscovered vein blocks placement",
+                  w.tryPlaceMiner(hiddenX, hiddenY).result == PlaceResult::undiscovered);
+            w.probeAt(hiddenX, hiddenY);
+            check("probing it makes placement legal",
+                  w.tryPlaceMiner(hiddenX, hiddenY).result == PlaceResult::placed);
+            check("the vein was revealed as a whole", w.findDeposit(hiddenId)->discovered == true);
+        }
     }
 
     printf("\n=== same seed replays the same world ===\n");

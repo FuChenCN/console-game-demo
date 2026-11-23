@@ -8,14 +8,15 @@
             "name": "(gdb) 启动",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/a.exe",
+            "program": "${workspaceFolder}/PYS.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
+            "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": true,
             "MIMode": "gdb",
-            "miDebuggerPath": "/path/to/gdb",
+            // 需要 MSYS2 的 gdb(mingw-w64-ucrt-x86_64-gdb);不写 miDebuggerPath 时由 cppdbg 从 PATH 找。
+            "preLaunchTask": "build PYS (all sources)",
             "setupCommands": [
                 {
                     "description": "为 gdb 启用整齐打印",
