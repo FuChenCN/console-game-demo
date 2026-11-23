@@ -169,6 +169,8 @@ int main(){
     const int CELL_COLS = 2;
     const BYTE PLAYER_ATTR = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
     const BYTE RIG_ATTR = FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
+    //矿池挖空后矿机只能空转:暗红,和"还在出矿"的品红分开。
+    const BYTE RIG_ATTR_IDLE = FOREGROUND_RED;
     //背包按矿种分开计数;制作扣对应矿种。
     int invIron = 0;
     int invCopper = 0;
@@ -513,7 +515,11 @@ int main(){
                         continue;
                     const int screenX = (rig.x - cameraX) * CELL_COLS;
                     const int screenY = rig.y - cameraY;
-                    writeToken(screenX, screenY, "&", RIG_ATTR);
+                    //两字符 token:和矿格一样占 2 列。池子空了画暗红,还在出矿画品红。
+                    const bool hasOre = rig.pool != 0 &&
+                                        static_cast<size_t>(rig.pool) <= world.pools.size() &&
+                                        world.pools[rig.pool - 1].remaining > 0;
+                    writeToken(screenX, screenY, "Rg", hasOre ? RIG_ATTR : RIG_ATTR_IDLE);
                 }
                 string position = "X:" + to_string(x) + " Y:" + to_string(y);
                 if(sidebar){
@@ -527,6 +533,22 @@ int main(){
                     writeText(column, 2, "Remaining:" + to_string(world.remainResource), infoWidth);
                     writeText(column, 3, "Map:" + to_string(world.width) + " x " + to_string(world.height), infoWidth);
                     writeText(column, 4, "View:" + to_string(viewW) + " x " + to_string(viewH), infoWidth);
+                    //脚下这条矿脉的余量:Remaining 是全图总数,看不出单条脉还剩多少。
+                    const uint16_t underPool = world.poolAt(x, y);
+                    if(underPool != 0 && static_cast<size_t>(underPool) <= world.pools.size()){
+                        const OrePool& pool = world.pools[underPool - 1];
+                        //低于 1/4 容量时整行变红,提醒这条脉快见底了。
+                        const int veinAttr = pool.remaining * 4 < pool.capacity
+                                                 ? (FOREGROUND_RED | FOREGROUND_INTENSITY)
+                                                 : -1;
+                        writeText(column, 5,
+                                  string("Vein:") + ORE_LABELS[static_cast<int>(pool.kind)] +
+                                  " " + to_string(pool.remaining) + "/" +
+                                  to_string(pool.capacity) + "#",
+                                  infoWidth, veinAttr);
+                    }
+                    else
+                        writeText(column, 5, "Vein:-", infoWidth);
                     writeText(column, 6, "WASD Move  E/Space Collect", infoWidth);
                     writeText(column, 7, "Right Bag  Enter Rig  Q Quit", infoWidth);
                     if(!playNotice.empty())
